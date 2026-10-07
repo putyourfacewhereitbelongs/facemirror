@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Trill Face Puppet · 3D head turn, rigid dental arches, audio visemes</title>
+<meta name="description" content="Drive a static photo from a webcam face mesh: perspective head rotation, inpainted background plate, temporal-stable triangle warping, rigid teeth and tongue, audio-driven visemes, photo and video capture." />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🎭</text></svg>" />
+<script type="module" src="/src/puppet/main.js"></script>
+<script type="module">
+  // keep every range's readout in sync (purely presentational)
+  const sync = () => document.querySelectorAll('input[type=range]').forEach(r => {
+    const out = r.parentElement && r.parentElement.querySelector('output');
+    if (out) out.textContent = (+r.value).toFixed(r.step && +r.step < 0.1 ? 2 : (+r.step < 1 ? 2 : 0));
+  });
+  addEventListener('DOMContentLoaded', () => {
+    sync();
+    document.querySelectorAll('input[type=range]').forEach(r => r.addEventListener('input', sync));
+  });
+  if (document.readyState !== 'loading') setTimeout(sync, 0);
+</script>
+</head>
+<body>
+
+<video id="vid" playsinline muted autoplay></video>
+<audio id="audioEl" hidden loop></audio>
+
+<header class="topbar">
+  <h1>Trill <em>Face Puppet</em></h1>
+  <span class="sub">478-point 3D mesh · perspective head turn · rigid dental arches · audio visemes</span>
+  <span class="spacer"></span>
+  <span class="pill">MediaPipe Tasks Vision 0.10.14 · GPU→CPU fallback</span>
+  <span class="pill">Delaunator 5 · official tessellation</span>
+  <a class="pill" href="./index.html">← FaceMirror Studio</a>
+</header>
+
+<main class="layout">
+
+  <!-- ===================== stage ===================== -->
+  <section class="stage-col">
+    <div class="stage-wrap">
+      <canvas id="puppet" width="900" height="900"></canvas>
+      <div id="recBadge" hidden>● REC</div>
+      <div class="hint">Drag any dot to sculpt the photo · pick a sculpt tool and click the face to smile / frown / make an "O" · double-click a dot to reset it · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo</div>
+    </div>
+
+    <div class="transport">
+      <button id="camBtn" disabled>Start webcam</button>
+      <button id="snapBtn" disabled>Use my face as the photo</button>
+      <label class="btn filebtn">Choose image<input id="file" type="file" accept="image/*" /></label>
+      <button id="demoBtn">Demo portrait</button>
+      <button id="photoBtn" class="primary" disabled>📷 Photo</button>
+      <button id="recordBtn" disabled>⏺ Record video</button>
+      <button id="calBtn" disabled>Set neutral pose</button>
+      <button id="resetBtn">Reset drags</button>
+      <button id="undoBtn">Undo</button>
+      <label class="chk" style="margin:0"><input id="showPts" type="checkbox" checked /> Face landmarks</label>
+      <label class="chk" style="margin:0"><input id="showOrig" type="checkbox" /> Original photo</label>
+    </div>
+
+    <div class="meters" id="meters">No image loaded yet</div>
+    <div class="status" id="status">Loading the face model…</div>
+
+    <details class="card">
+      <summary>Keyboard &amp; interaction <span class="tag">shortcuts</span></summary>
+      <div class="body">
+        <div class="keys">
+          <div><kbd>C</kbd> start webcam</div>
+          <div><kbd>P</kbd> photo</div>
+          <div><kbd>V</kbd> record</div>
+          <div><kbd>M</kbd> minimize webcam</div>
+          <div><kbd>L</kbd> toggle landmarks</div>
+          <div><kbd>R</kbd> reset drags</div>
+          <div><kbd>T</kbd> (hold) force tongue out</div>
+          <div><kbd>Ctrl</kbd>+<kbd>Z</kbd> undo</div>
+        </div>
+        <p class="legend">Landmark drags are stored in <em>canonical head space</em>, so a sculpted smile keeps its shape while the head turns instead of shearing with the pose. Each drag is spread over its neighbours with a Gaussian field and mirrored to the symmetric partner when <b>Mirror</b> is on.</p>
+      </div>
+    </details>
+  </section>
+
+  <!-- ===================== side ===================== -->
+  <aside class="side-col">
+
+    <div class="card" id="webcamCard">
+      <div class="cambar">
+        <strong style="font-size:12.5px">Webcam driver</strong>
+        <span class="spacer"></span>
+        <label class="chk" style="margin:0"><input id="pmix" type="checkbox" /> Mix preset</label>
+        <button id="minCamBtn">Minimize</button>
+      </div>
+      <div class="camwrap"><canvas id="cam" width="480" height="360"></canvas></div>
+      <div class="cambar" style="border-top:1px solid var(--line)">
+        <label class="chk" style="margin:0"><input id="sym" type="checkbox" /> Mirror drags</label>
+        <label class="chk" style="margin:0"><input id="ab" type="checkbox" /> Idle blinking</label>
+        <label class="chk" style="margin:0"><input id="ibug" type="checkbox" /> iBUG-68 overlay</label>
+      </div>
+    </div>
+
+    <details class="card" open>
+      <summary>Sculpt tools <span class="tag">click the face</span></summary>
+      <div class="body">
+        <div class="chips" id="sculptTools">
+          <button type="button" data-sculpt="drag" class="on">Drag dots</button>
+          <button type="button" data-sculpt="smile">Smile</button>
+          <button type="button" data-sculpt="frown">Frown</button>
+          <button type="button" data-sculpt="o">Mouth “O”</button>
+          <button type="button" data-sculpt="kiss">Kiss</button>
+          <button type="button" data-sculpt="sneer">Sneer</button>
+          <button type="button" data-sculpt="tongue">Tongue drop</button>
+        </div>
+        <label class="ctl"><span>Drag radius</span><input id="da" type="range" min="0.4" max="2.4" step="0.05" value="1" /><output>1.00</output>
+          <span class="help">How far the skin follows a dragged landmark (Gaussian σ as a fraction of face width).</span></label>
+        <label class="ctl"><span>Drag strength</span><input id="dr" type="range" min="0.3" max="2.2" step="0.05" value="1" /><output>1.00</output>
+          <span class="help">Scales the per-region displacement cap (lips 7 % of face height, eyes 1.5 %).</span></label>
+        <label class="ctl"><span>Sculpt smoothing</span><input id="sculptTau" type="range" min="0" max="0.25" step="0.005" value="0.06" /><output>0.06</output>
+          <span class="help">Edits glide to their target instead of snapping — one of the flicker sources in the original.</span></label>
+      </div>
+    </details>
+
+    <details class="card" open>
+      <summary>Head turn &amp; 3D <span class="tag">rigid rotation</span></summary>
+      <div class="body">
+        <label class="ctl"><span>Master turn</span><input id="turn" type="range" min="0" max="1.6" step="0.01" value="1" /><output>1.00</output></label>
+        <div class="grid2">
+          <label class="ctl"><span>Yaw gain</span><input id="yawG" type="range" min="0" max="2" step="0.01" value="1.15" /><output>1.15</output></label>
+          <label class="ctl"><span>Yaw limit</span><input id="yawMax" type="range" min="0.2" max="1.3" step="0.01" value="0.86" /><output>0.86</output></label>
+          <label class="ctl"><span>Pitch gain</span><input id="pitchG" type="range" min="0" max="2" step="0.01" value="1" /><output>1.00</output></label>
+          <label class="ctl"><span>Pitch limit</span><input id="pitchMax" type="range" min="0.1" max="1" step="0.01" value="0.5" /><output>0.50</output></label>
+          <label class="ctl"><span>Roll gain</span><input id="rollG" type="range" min="0" max="2" step="0.01" value="0.9" /><output>0.90</output></label>
+          <label class="ctl"><span>Roll limit</span><input id="rollMax" type="range" min="0.1" max="1" step="0.01" value="0.5" /><output>0.50</output></label>
+        </div>
+        <span class="help" style="color:var(--dim2);font-size:11px">Soft limits compress the last degrees instead of clipping, so the turn never hits a wall.</span>
+        <label class="ctl"><span>Head depth</span><input id="depth" type="range" min="0.5" max="1.7" step="0.01" value="1" /><output>1.00</output>
+          <span class="help">Skull ellipsoid depth (back-projected, so rest pose is exactly the photo).</span></label>
+        <label class="ctl"><span>Perspective</span><input id="focal" type="range" min="0" max="1" step="0.01" value="0.45" /><output>0.45</output>
+          <span class="help">Short focal length = strong perspective (near side bigger). Long = flatter, more orthographic.</span></label>
+        <label class="ctl"><span>Detector depth blend</span><input id="detBlend" type="range" min="0" max="1" step="0.01" value="0.34" /><output>0.34</output>
+          <span class="help">How much of the network's relative z is mixed into the analytic skull prior.</span></label>
+        <label class="ctl"><span>Dolly (zoom→depth)</span><input id="dolly" type="range" min="0" max="1.6" step="0.01" value="0.7" /><output>0.70</output></label>
+        <label class="ctl"><span>Pan response</span><input id="pan" type="range" min="0" max="1.6" step="0.01" value="0.8" /><output>0.80</output></label>
+        <label class="ctl"><span>Neck / body follow</span><input id="bm" type="range" min="0" max="1.4" step="0.01" value="1" /><output>1.00</output></label>
+        <label class="ctl"><span>Hair inertia</span><input id="hs" type="range" min="0" max="1.4" step="0.01" value="0.6" /><output>0.60</output>
+          <span class="help">Damped spring chasing the skull — secondary motion on the three scalp shells.</span></label>
+        <label class="ctl"><span>Max texture stretch</span><input id="stretch" type="range" min="1.2" max="3" step="0.01" value="2" /><output>2.00</output>
+          <span class="help">Position-based-dynamics edge cap: no texel can be pulled further than this, so nothing smears.</span></label>
+        <label class="ctl"><span>Relighting</span><input id="shade" type="range" min="0" max="1.4" step="0.01" value="0.75" /><output>0.75</output>
+          <span class="help">Differential Lambert term from the rotated normals, composited with soft-light (exactly zero at neutral).</span></label>
+        <label class="ctl"><span>Seam blend</span><input id="blend" type="range" min="0" max="1" step="0.01" value="0.55" /><output>0.55</output></label>
+        <label class="ctl"><span>Contact shadow (AO)</span><input id="seamAO" type="range" min="0" max="1" step="0.01" value="0.5" /><output>0.50</output></label>
+        <label class="chk"><input id="plate" type="checkbox" checked /> Inpainted background plate
+          <span class="help">Telea-style pyramid inpaint of the head region, so turning reveals background instead of the old head.</span></label>
+        <label class="chk"><input id="seam" type="checkbox" checked /> Seamless composite + contact AO</label>
+        <label class="chk"><input id="cull" type="checkbox" /> Back-face culling (inspection)
+          <span class="help">Off by default: the face patch is an open surface, so culling punches holes at the far silhouette. Painter sorting handles occlusion.</span></label>
+      </div>
+    </details>
+
+    <details class="card">
+      <summary>Expression presets <span class="tag">23 poses</span></summary>
+      <div class="body">
+        <div class="chips" id="presets"></div>
+        <label class="ctl"><span>Preset intensity</span><input id="pi" type="range" min="0" max="1.5" step="0.01" value="1" /><output>1.00</output></label>
+        <label class="ctl"><span>Expression scale</span><input id="exs" type="range" min="0" max="1.6" step="0.01" value="0.8" /><output>0.80</output>
+          <span class="help">Retargeting gain on the live driver's expression field.</span></label>
+        <label class="ctl"><span>Lip flexibility</span><input id="lx" type="range" min="0" max="2" step="0.01" value="1.25" /><output>1.25</output></label>
+        <label class="ctl"><span>Nose flexibility</span><input id="nf" type="range" min="0" max="2" step="0.01" value="1" /><output>1.00</output></label>
+        <div class="grid2">
+          <label class="ctl"><span>Eye retarget</span><input id="retEye" type="range" min="0.3" max="2" step="0.01" value="1" /><output>1.00</output></label>
+          <label class="ctl"><span>Mouth retarget</span><input id="retMouth" type="range" min="0.3" max="2" step="0.01" value="1" /><output>1.00</output></label>
+        </div>
+        <label class="ctl"><span>Stitching</span><input id="stitch" type="range" min="0" max="1" step="0.01" value="0.85" /><output>0.85</output>
+          <span class="help">LivePortrait-style anchor: removes mean rigid drift of each eye cloud and the maxilla so they cannot slide off the face.</span></label>
+        <label class="ctl"><span>Blink response</span><input id="bl" type="range" min="0" max="1.6" step="0.01" value="1" /><output>1.00</output></label>
+        <label class="ctl"><span>Gaze gain</span><input id="gg" type="range" min="0" max="3" step="0.01" value="1.9" /><output>1.90</output></label>
+      </div>
+    </details>
+
+    <details class="card">
+      <summary>Jaw, teeth &amp; tongue <span class="tag">oral realism</span></summary>
+      <div class="body">
+        <label class="ctl"><span>Jaw gain</span><input id="jawGain" type="range" min="0" max="2" step="0.01" value="1" /><output>1.00</output>
+          <span class="help">The mandible is a rigid bone hinged at the TMJ axis — not a 2D slide.</span></label>
+        <label class="ctl"><span>Chin skin slide</span><input id="jawSlide" type="range" min="0" max="1" step="0.01" value="0.3" /><output>0.30</output></label>
+        <label class="ctl"><span>Cancel driver's 2D jaw</span><input id="jawCancel" type="range" min="0" max="1" step="0.01" value="1" /><output>1.00</output>
+          <span class="help">Subtracts the detector's rigid mandible translation so the hinge replaces it (no double motion).</span></label>
+        <label class="ctl"><span>Tooth visibility</span><input id="tv" type="range" min="0" max="1" step="0.01" value="0.4" /><output>0.40</output></label>
+        <label class="ctl"><span>Tooth scale</span><input id="toothScale" type="range" min="0.5" max="1.6" step="0.01" value="1" /><output>1.00</output></label>
+        <label class="ctl"><span>Tooth brightness</span><input id="tb" type="range" min="0.7" max="1.6" step="0.01" value="1.15" /><output>1.15</output></label>
+        <label class="ctl"><span>Enamel warmth</span><input id="tw" type="range" min="-0.4" max="0.6" step="0.01" value="0" /><output>0.00</output></label>
+        <label class="ctl"><span>Gum visibility</span><input id="gumV" type="range" min="0" max="1.4" step="0.01" value="0.6" /><output>0.60</output></label>
+        <label class="ctl"><span>Arch stability</span><input id="archTau" type="range" min="0" max="1" step="0.01" value="0.55" /><output>0.55</output>
+          <span class="help">Dental arch parameters are low-passed in the arch's own local frame with angle unwrapping — teeth stop crawling between frames.</span></label>
+        <label class="ctl"><span>Tongue sensitivity</span><input id="tsens" type="range" min="0.2" max="3" step="0.01" value="1.4" /><output>1.40</output></label>
+        <label class="chk"><input id="tf" type="checkbox" /> Force tongue out <span class="help">(or hold <kbd>T</kbd>)</span></label>
+      </div>
+    </details>
+
+    <details class="card" id="audioPanel">
+      <summary>Audio-driven speech <span class="tag">DSP visemes</span></summary>
+      <div class="body">
+        <div class="transport" style="margin-bottom:6px">
+          <button id="micBtn">Drive lips from microphone</button>
+          <label class="btn filebtn">Audio file<input id="afile" type="file" accept="audio/*" /></label>
+        </div>
+        <label class="ctl"><span>Audio gain</span><input id="audGain" type="range" min="0" max="2.4" step="0.01" value="1" /><output>1.00</output></label>
+        <label class="ctl"><span>Tongue response</span><input id="audTongue" type="range" min="0" max="2" step="0.01" value="1" /><output>1.00</output></label>
+        <label class="ctl"><span>Head prosody</span><input id="audHead" type="range" min="0" max="1.6" step="0.01" value="0.6" /><output>0.60</output>
+          <span class="help">F0 contour and accent envelope add subtle head motion (SadTalker PoseVAE analogue).</span></label>
+        <div id="bands"></div>
+        <p class="legend">Six-band analysis: F0 60–280 Hz, F1 280–900, F2 900–1800, F2-high 1800–3000, F3 3000–6500, air 6500–11000. Jaw follows F1 energy, spread follows F2-high, rounding follows a low F2, fricatives and bursts drive the tongue. This is signal processing, not a trained lip-sync network.</p>
+      </div>
+    </details>
+
+    <details class="card">
+      <summary>Temporal stability <span class="tag">anti-flicker</span></summary>
+      <div class="body">
+        <label class="ctl"><span>Smoothing</span><input id="sm" type="range" min="0" max="1" step="0.01" value="0.8" /><output>0.80</output>
+          <span class="help">One-Euro cutoff on the landmark field + time constants on the head angles.</span></label>
+        <label class="chk"><input id="autoDemo" type="checkbox" checked /> Auto-load the demo portrait</label>
+        <p class="legend">What was replaced: two overlapping triangle passes per frame (official tessellation <em>and</em> Delaunay) are now one pass; every binary gate
+        (<code>gap &gt; w*.08</code>, <code>kiss &gt; .2</code>, <code>lid &lt; .05</code> …) is a continuous gate with a slower release than attack; landmark dropout holds the last
+        pose and relaxes to neutral over ~1 s instead of snapping; all filters use <code>1 − exp(−dt/τ)</code> so a dropped frame cannot jump; and the frame is skipped when
+        nothing moved.</p>
+      </div>
+    </details>
+
+    <details class="card">
+      <summary>Capture &amp; quality <span class="tag">photo · video</span></summary>
+      <div class="body">
+        <label class="chk"><input id="recAudio" type="checkbox" checked /> Mix microphone audio into recordings</label>
+        <label class="ctl"><span>Recording bitrate</span><input id="recBitrate" type="range" min="2" max="24" step="1" value="8" /><output>8</output>
+          <span class="help">Mbps. VP9 → VP8 → WebM → MP4 fallback, whichever the browser supports.</span></label>
+        <label class="ctl"><span>Render quality</span><input id="quality" type="range" min="0" max="2" step="1" value="1" /><output>1</output>
+          <span class="help">0 fast · 1 balanced · 2 ultra (wider clip padding, higher-resolution shading buffer).</span></label>
+        <label class="ctl"><span>Detail enhancement</span><input id="enh" type="range" min="0" max="1" step="0.01" value="0.35" /><output>0.35</output>
+          <span class="help">Local high-pass re-applied with overlay on the mouth and eye ROIs only — the browser analogue of the enhancement stage in VideoReTalking / CodeFormer pipelines.</span></label>
+        <p class="legend">Photos export the full-resolution puppet canvas as PNG. Video records <code>canvas.captureStream(0)</code> with an explicit
+        <code>requestFrame()</code> after every render, so the encoder gets exactly the frames that were drawn.</p>
+      </div>
+    </details>
+
+    <details class="card">
+      <summary>Live signals <span class="tag">blendshapes</span></summary>
+      <div class="body"><div id="aus"></div></div>
+    </details>
+
+    <details class="card">
+      <summary>Technique map <span class="tag">honest labels</span></summary>
+      <div class="body">
+        <table class="tech">
+          <thead><tr><th>Research system</th><th>What runs here</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td>MediaPipe FaceLandmarker</td><td>478 3D landmarks + 52 blendshapes, GPU→CPU, real</td><td><span class="k real">real</span></td></tr>
+            <tr><td>MediaPipe PoseLandmarker</td><td>shoulders / elbows / wrists drive the photo's body grid</td><td><span class="k real">real</span></td></tr>
+            <tr><td>Delaunator triangulation</td><td>shell + hair + body Delaunay, official tessellation for the face</td><td><span class="k real">real</span></td></tr>
+            <tr><td>FOMM</td><td>sparse keypoint motion → dense per-triangle affine warp, occlusion via painter sort + plate</td><td><span class="k analogue">analogue</span></td></tr>
+            <tr><td>Thin Plate Spline</td><td>Gaussian spread field per dragged landmark (local, smooth falloff)</td><td><span class="k analogue">analogue</span></td></tr>
+            <tr><td>Face Vid2Vid</td><td>pose / expression decomposition: expression applied in canonical space <em>before</em> rotation</td><td><span class="k analogue">analogue</span></td></tr>
+            <tr><td>FLAME / DECA / EMOCA</td><td>anthropometric skull ellipsoid + pinhole projection, back-projected so rest = identity</td><td><span class="k analogue">analogue</span></td></tr>
+            <tr><td>LivePortrait</td><td>stitching (eye + maxilla anchor drift removal) and eye/mouth retargeting factors</td><td><span class="k analogue">analogue</span></td></tr>
+            <tr><td>MegaPortraits</td><td>identity pixels preserved; ROI enhancement instead of regeneration</td><td><span class="k analogue">analogue</span></td></tr>
+            <tr><td>Wav2Lip</td><td>6-band formant DSP → viseme parameters (no trained lip-sync net)</td><td><span class="k analogue">analogue</span></td></tr>
+            <tr><td>SadTalker</td><td>3DMM-style expression coefficients + F0/accent prosody on head motion</td><td><span class="k analogue">analogue</span></td></tr>
+            <tr><td>VideoReTalking</td><td>three-stage idea: align → retarget → local enhancement pass</td><td><span class="k analogue">analogue</span></td></tr>
+            <tr><td>GeneFace / NeRF avatars</td><td>none — a single photo has no view-dependent radiance field</td><td><span class="k viz">not present</span></td></tr>
+            <tr><td>AniPortrait</td><td>temporally smoothed landmark guidance (no diffusion)</td><td><span class="k analogue">analogue</span></td></tr>
+            <tr><td>EMO / Hallo / VASA-1</td><td>nothing generated; audio only modulates existing photo pixels</td><td><span class="k viz">not present</span></td></tr>
+            <tr><td>GFPGAN / CodeFormer</td><td>difference-of-blur high-pass on mouth + eye ROIs</td><td><span class="k analogue">analogue</span></td></tr>
+            <tr><td>Poisson / gradient compositing</td><td>pyramid inpaint + blurred plate + contact AO along the silhouette</td><td><span class="k analogue">analogue</span></td></tr>
+            <tr><td>Temporal discriminators</td><td>One-Euro field filter, dt-normalised gates, arch-frame smoothing</td><td><span class="k analogue">analogue</span></td></tr>
+            <tr><td>Flow-based warping</td><td>edge-length PBD relaxation instead of optical flow</td><td><span class="k analogue">analogue</span></td></tr>
+            <tr><td>iBUG-68 / dlib</td><td>68-point subset of the 478 mesh, optional overlay</td><td><span class="k viz">visualisation</span></td></tr>
+            <tr><td>FACS action units</td><td>MediaPipe blendshapes relabelled with AU-style names</td><td><span class="k viz">visualisation</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </details>
+
+    <details class="card">
+      <summary>Debug <span class="tag">self test</span></summary>
+      <div class="body">
+        <div class="transport"><button id="selfTest">Run pipeline self-test</button></div>
+        <pre class="out" id="selfTestOut" hidden></pre>
+        <p class="legend">Builds a synthetic face, poses it, and asserts: rest projection is the identity, yaw compresses the silhouette instead of stretching it,
+        the stretch limiter caps elongation, the jaw hinge opens downward, the dental arch is stable under landmark jitter, visemes are discriminative, and the plate inpaint converges.
+        Also available from the console as <code>__puppet.selfTest()</code>.</p>
+      </div>
+    </details>
+
+  </aside>
+</main>
+</body>
+</html>
