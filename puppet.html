@@ -1,0 +1,3324 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Trill Face Puppet · 3D head turn, rigid teeth, audio visemes</title>
+<meta name="description" content="Drive a still photograph from a webcam face mesh: perspective head rotation, mirrored-source far-side approximation, painter-sorted shell warping, procedural dental arches and tongue, audio visemes, PNG capture and WebM recording." />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🎭</text></svg>" />
+<style>
+:root{--bg:#0d0f14;--card:#161a22;--card2:#1b202a;--fg:#e8eaf0;--mut:#8b93a7;--acc:#5eead4;--acc2:#f472b6;--line:#272c38}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:18px}
+a{color:var(--acc)}
+h1{font-size:21px;margin:0 0 4px}
+h1 em{color:var(--acc);font-style:normal}
+.sub{color:var(--mut);margin:0 0 14px;max-width:78ch}
+.bar{display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center;margin-bottom:12px}
+button,.btn{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:9px;padding:8px 12px;font:inherit;cursor:pointer}
+button:hover:not(:disabled),.btn:hover{border-color:var(--acc)}
+button:disabled{opacity:.4;cursor:not-allowed}
+button.on{border-color:var(--acc);color:var(--acc);background:#12211f}
+button.primary{background:var(--acc);color:#06201c;border-color:var(--acc);font-weight:600}
+button.danger{border-color:#5c2634;color:#f7a3b4}
+label.chk{display:flex;gap:6px;align-items:center;color:var(--mut);white-space:nowrap}
+label.rng{display:flex;flex-direction:column;gap:2px;color:var(--mut);font-size:13px}
+label.rng output{color:var(--acc);font-variant-numeric:tabular-nums}
+input[type=range]{width:100%;accent-color:var(--acc)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px;align-items:start}
+.card{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:11px}
+.card h2{font-size:12.5px;color:var(--mut);margin:0 0 8px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;display:flex;gap:8px;align-items:center}
+.card h2 .spacer{flex:1}
+canvas{width:100%;height:auto;display:block;border-radius:9px;background:#080a0e}
+#puppet{touch-action:none;cursor:crosshair}
+#cam{max-width:100%}
+video{display:none}
+#meters{margin:8px 0 0;color:var(--mut);font-size:12.5px;font-variant-numeric:tabular-nums;min-height:18px}
+#status{margin:14px 0 0;color:var(--mut);min-height:22px}
+.set{display:grid;grid-template-columns:repeat(auto-fit,minmax(196px,1fr));gap:9px 16px;padding-top:8px}
+details.card{margin-bottom:14px}
+summary{cursor:pointer;font-weight:600;color:var(--fg);list-style:none}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"▸";color:var(--acc);display:inline-block;width:14px}
+details[open]>summary::before{content:"▾"}
+.hint{color:var(--mut);font-size:12.5px;margin:8px 0 0}
+.tag{display:inline-block;border:1px solid var(--line);border-radius:99px;padding:2px 9px;color:var(--mut);font-size:11.5px}
+.webcam-card.minimized #cam,.webcam-card.minimized #meters{display:none}
+.webcam-card.minimized{align-self:start}
+.backlink{display:inline-block;margin-bottom:12px;color:var(--acc);text-decoration:none;border:1px solid var(--line);border-radius:9px;padding:6px 11px}
+.backlink:hover{border-color:var(--acc)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 14px;color:var(--mut);font-size:12.5px;margin:0}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;vertical-align:middle}
+</style>
+</head>
+<body>
+<a class="backlink" href="index.html#back" id="contLink">◀ Back to FaceMirror · Continue ▶</a>
+<h1>Trill <em>Face Puppet</em></h1>
+<p class="sub">
+  A still photo becomes a 2.5D facial shell: 478 landmarks lifted into canonical head space, three hair rings and a pinned
+  frame around them. Your webcam face mesh drives it with a weighted Kabsch fit — pose is separated from expression so a
+  smile stays on the face while the head turns. The unseen far side is approximated from mirrored photo patches rather
+  than generated; the oral cavity uses a rigid jaw, procedural dental arches and a textured tongue. Drag a dot to sculpt,
+  or select Smile, Frown or Mouth O and click the face.
+</p>
+
+<div class="bar">
+  <button id="camBtn" class="primary" disabled>Start webcam</button>
+  <label class="btn">Choose image…<input id="file" type="file" accept="image/*" hidden></label>
+  <button id="snapBtn" title="Use a mirrored webcam snapshot as the source portrait" disabled>Use webcam snapshot</button>
+  <button id="photoBtn" title="Download the current rendered puppet frame as a PNG" disabled>📷 Save rendered photo</button>
+  <button id="recordBtn" disabled>Record video</button>
+  <button id="micBtn">Mic lip-sync</button>
+  <button id="calBtn" disabled>Set neutral pose</button>
+  <button id="resetBtn">Reset drags</button>
+  <button id="undoBtn">Undo (Ctrl+Z)</button>
+  <label class="chk"><input id="sym" type="checkbox" checked> Symmetric drag</label>
+  <label class="chk"><input id="mir" type="checkbox" checked> Mirror head motion</label>
+  <label class="chk"><input id="showPts" type="checkbox" checked> Landmarks</label>
+  <label class="chk"><input id="showMesh" type="checkbox"> Mesh</label>
+  <label class="chk"><input id="showOrig" type="checkbox"> Original</label>
+  <label class="rng" style="width:150px">Head turn gain <output id="turnOut">1.00</output>
+    <input id="turn" type="range" min="0" max="1.6" step="0.05" value="1">
+  </label>
+  <label class="rng" style="width:150px">Quality <output id="qualityOut">1</output>
+    <input id="quality" type="range" min="0" max="2" step="1" value="1">
+  </label>
+</div>
+
+<details class="card" open>
+  <summary>Click-to-sculpt expressions</summary>
+  <div class="bar" id="sculptTools" style="padding-top:8px"></div>
+  <p class="hint">Pick a tool, then click the face near the mouth (or the brows / cheeks for those tools). The edit is applied
+  in canonical head space, so it rotates with the head. <b>Drag landmarks</b> is the freeform mode: hover a dot to see which
+  feature it belongs to, double-click a dot to reset just that one, <b>Ctrl+Z</b> undoes anything.</p>
+</details>
+
+<details class="card" open>
+  <summary>Expression presets</summary>
+  <div class="bar" id="presets" style="padding-top:8px"></div>
+  <div class="set">
+    <label class="rng">Preset intensity <output></output><input id="pi" type="range" min="0" max="1.5" step="0.05" value="1"></label>
+    <label class="rng">Expression strength <output></output><input id="exs" type="range" min="0" max="1.5" step="0.05" value="0.8"></label>
+    <label class="rng">Lip expressiveness <output></output><input id="lx" type="range" min="0.6" max="1.8" step="0.05" value="1.25"></label>
+    <label class="rng">Nose flexibility <output></output><input id="nf" type="range" min="0" max="1" step="0.05" value="1"></label>
+    <label class="chk"><input id="pmix" type="checkbox"> Mix preset with my webcam face</label>
+    <label class="chk"><input id="ab" type="checkbox" checked> Idle blinking</label>
+  </div>
+</details>
+
+<details class="card">
+  <summary>Tracking, motion and rendering</summary>
+  <div class="set">
+    <label class="rng">Smoothing (more = calmer) <output></output><input id="sm" type="range" min="0" max="1" step="0.05" value="0.72"></label>
+    <label class="rng">Blink sensitivity <output></output><input id="bl" type="range" min="0.5" max="1.5" step="0.05" value="1"></label>
+    <label class="rng">Eye gaze gain <output></output><input id="gg" type="range" min="0.5" max="2.5" step="0.05" value="1.7"></label>
+    <label class="rng">Tongue sensitivity <output></output><input id="tsens" type="range" min="0.5" max="3" step="0.05" value="1.4"></label>
+    <label class="rng">3D depth (head turn) <output></output><input id="dp" type="range" min="0.5" max="2" step="0.05" value="1.3"></label>
+    <label class="rng">Focal length (perspective) <output></output><input id="focal" type="range" min="1.8" max="6" step="0.1" value="3.1"></label>
+    <label class="rng">Head-turn shading <output></output><input id="fs" type="range" min="0" max="1" step="0.05" value="0.35"></label>
+    <label class="rng">Hair swing <output></output><input id="hs" type="range" min="0" max="1.5" step="0.05" value="0.6"></label>
+    <label class="rng">Body motion (shoulders/arms) <output></output><input id="bm" type="range" min="0" max="1.5" step="0.05" value="1"></label>
+    <label class="rng">Drag reach <output></output><input id="dr" type="range" min="0.4" max="2" step="0.05" value="1"></label>
+    <label class="rng">Drag area (neighbours follow) <output></output><input id="da" type="range" min="0" max="2" step="0.05" value="1"></label>
+    <label class="rng">Max mouth opening <output></output><input id="mo" type="range" min="0.3" max="0.9" step="0.02" value="0.72"></label>
+    <label class="chk"><input id="lim" type="checkbox" checked> Anatomical limits (lids / lips can't invert)</label>
+    <label class="chk"><input id="tf" type="checkbox"> Force tongue out (or hold T)</label>
+  </div>
+</details>
+
+<details class="card">
+  <summary>Teeth &amp; oral cavity</summary>
+  <div class="set">
+    <label class="rng">Teeth visibility <output></output><input id="tv" type="range" min="0" max="1" step="0.05" value="0.4"></label>
+    <label class="rng">Teeth brightness <output></output><input id="tb" type="range" min="0.7" max="1.2" step="0.01" value="1.1"></label>
+    <label class="rng">Teeth warmth <output></output><input id="tw" type="range" min="0" max="1" step="0.05" value="0"></label>
+    <p class="hint">The arches are rigid bodies hinged on the mandible, sized from your photo's own mouth width, and lit
+    from the photo's own skin luminance — so they turn, foreshorten and shade with the head instead of floating over it.</p>
+  </div>
+</details>
+
+<div class="grid">
+  <div class="card webcam-card" id="webcamCard">
+    <h2>Webcam (mirrored) <span class="spacer"></span>
+      <button id="minCamBtn" type="button">Minimize</button>
+    </h2>
+    <canvas id="cam" width="640" height="480"></canvas>
+    <div id="meters">Webcam off.</div>
+    <p class="hint">Tracking keeps running at full speed while minimized.</p>
+  </div>
+  <div class="card">
+    <h2>Photo puppet <span class="spacer"></span><span class="tag" id="stageTag">no image yet</span></h2>
+    <canvas id="puppet" width="640" height="480"></canvas>
+  </div>
+</div>
+
+<p class="legend">
+  <span><i style="background:#60a5fa"></i>face outline</span>
+  <span><i style="background:#5eead4"></i>eyes</span>
+  <span><i style="background:#fbbf24"></i>brows</span>
+  <span><i style="background:#f472b6"></i>lips</span>
+  <span><i style="background:#fb7185"></i>inner mouth</span>
+  <span><i style="background:#a78bfa"></i>nose</span>
+</p>
+<div id="status">Loading the face model…</div>
+<video id="vid" playsinline muted autoplay></video>
+
+<!-- CDN dependencies: the same two the studio build uses -->
+<script src="https://cdn.jsdelivr.net/npm/delaunator@5.0.1/delaunator.min.js"></script>
+<script data-src="src/math.js">
+/* =====================================================================
+   FaceMirror · pure math core  (no DOM, no canvas)
+   Loaded as a classic script in the browser and inlined into puppet.html.
+   Exposed on globalThis.FM so both the app module and the Node test
+   harness (tools/verify.mjs) can exercise exactly the same code.
+
+   Contents
+     · scalars      clamp / lerp / smoothstep / softLimit / slew / schmitt
+     · vec3 + mat3  small row-major linear algebra
+     · eigen3/svd3  cyclic Jacobi eigen decomposition of a symmetric 3x3
+     · kabsch       weighted orthogonal Procrustes (rigid pose) w/ scale
+     · quaternion   mat<->quat, slerp, slew-limited rotation
+     · filters      one-euro filter, running-max decay, envelope follower
+     · geometry     catmull-rom closed spline, polygon area/validity
+   ===================================================================== */
+(function (root) {
+  'use strict';
+
+  /* ------------------------------ scalars ----------------------------- */
+  const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+  const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const smoothstep = (e0, e1, x) => {
+    const t = clamp01((x - e0) / ((e1 - e0) || 1e-9));
+    return t * t * (3 - 2 * t);
+  };
+  /* Soft saturation.  Exactly linear out to `kneeFrac` of the bound so that
+     ordinary head turns are NOT attenuated (a plain tanh squashes even a
+     30° turn), then a C1-continuous exponential knee that approaches the
+     bound asymptotically and can never cross it.                        */
+  const softLimit = (x, m, kneeFrac) => {
+    if (m <= 1e-9) return 0;
+    const a = m * (kneeFrac === undefined ? 0.70 : clamp01(kneeFrac));
+    const s = x < 0 ? -1 : 1, ax = Math.abs(x);
+    if (ax <= a) return x;
+    const r = m - a;
+    return s * (a + r * (1 - Math.exp(-(ax - a) / r)));
+  };
+  const sign = v => (v < 0 ? -1 : 1);
+  const fin = v => Number.isFinite(v);
+  /* Geometry consumers use both tuple points [x,y] and renderer points
+     {x,y}; normalize the latter at the boundary instead of silently
+     rejecting every overlay polygon. Typed arrays stay tuple-compatible. */
+  const xy2 = p => p && p.x !== undefined ? [p.x, p.y] : p;
+  const fin2 = p => { const q = xy2(p); return !!q && fin(q[0]) && fin(q[1]); };
+  const fin3 = p => !!p && fin(p[0]) && fin(p[1]) && fin(p[2]);
+
+  /* slew limiter: approach a target at a bounded rate (units / second).
+     This is the anti-pop primitive: nothing in this app jumps, every
+     discrete state change is turned into a rate-limited envelope.     */
+  function slew(cur, target, dt, upRate, downRate) {
+    if (!fin(cur) || !fin(target)) return fin(target) ? target : 0;
+    const step = (target > cur ? upRate : downRate) * dt;
+    const d = target - cur;
+    return Math.abs(d) <= step ? target : cur + (d < 0 ? -step : step);
+  }
+
+  /* exponential-ish follower with a dead-band: ignores sub-pixel noise,
+     used to keep a resting face perfectly still (no shimmer).         */
+  function follow(cur, target, dt, rate, deadband) {
+    if (!fin(cur)) cur = 0;
+    const d = target - cur;
+    if (Math.abs(d) < (deadband || 0)) return cur;
+    const a = 1 - Math.exp(-(rate || 8) * (dt || 1 / 60));
+    return cur + d * a;
+  }
+
+  /* Schmitt trigger — hysteresis for boolean-ish states so a threshold
+     sitting exactly on a signal's average cannot strobe.             */
+  function schmitt(state, x, onAt, offAt) {
+    if (state) return x > offAt;
+    return x > onAt;
+  }
+
+  /* envelope follower with attack/release (audio RMS, jaw, lids, ...)  */
+  function envelope(cur, x, dt, attack, release) {
+    /* 4-arg form means "same speed both ways" — an undefined release used to
+       leak NaN into every signal that decayed (tracker trust did exactly
+       that on the first dropped frame).                              */
+    const rate = x > cur ? attack : (release === undefined ? attack : release);
+    return cur + (x - cur) * (1 - Math.exp(-rate * (dt || 1 / 60)));
+  }
+
+  /* ------------------------------- vec3 ------------------------------- */
+  const v3 = {
+    sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+    add: (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]],
+    scale: (a, s) => [a[0] * s, a[1] * s, a[2] * s],
+    dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
+    cross: (a, b) => [
+      a[1] * b[2] - a[2] * b[1],
+      a[2] * b[0] - a[0] * b[2],
+      a[0] * b[1] - a[1] * b[0]
+    ],
+    len: a => Math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]),
+    norm: a => {
+      const l = Math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]) || 1;
+      return [a[0] / l, a[1] / l, a[2] / l];
+    },
+    dist: (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]),
+    mix: (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]
+  };
+
+  /* ---------------------------- mat3 (row major) ---------------------- */
+  const m3 = {
+    id: () => [1, 0, 0, 0, 1, 0, 0, 0, 1],
+    t: A => [A[0], A[3], A[6], A[1], A[4], A[7], A[2], A[5], A[8]],
+    mul(A, B) {
+      const C = new Array(9);
+      for (let r = 0; r < 3; r++)
+        for (let c = 0; c < 3; c++)
+          C[r * 3 + c] = A[r * 3] * B[c] + A[r * 3 + 1] * B[3 + c] + A[r * 3 + 2] * B[6 + c];
+      return C;
+    },
+    mv(A, v) {
+      return [
+        A[0] * v[0] + A[1] * v[1] + A[2] * v[2],
+        A[3] * v[0] + A[4] * v[1] + A[5] * v[2],
+        A[6] * v[0] + A[7] * v[1] + A[8] * v[2]
+      ];
+    },
+    mtv(A, v) {
+      return [
+        A[0] * v[0] + A[3] * v[1] + A[6] * v[2],
+        A[1] * v[0] + A[4] * v[1] + A[7] * v[2],
+        A[2] * v[0] + A[5] * v[1] + A[8] * v[2]
+      ];
+    },
+    det: A =>
+      A[0] * (A[4] * A[8] - A[5] * A[7]) -
+      A[1] * (A[3] * A[8] - A[5] * A[6]) +
+      A[2] * (A[3] * A[7] - A[4] * A[6]),
+    inv(A) {
+      const d = m3.det(A);
+      if (!fin(d) || Math.abs(d) < 1e-12) return m3.id();
+      const i = 1 / d;
+      return [
+        (A[4] * A[8] - A[5] * A[7]) * i, (A[2] * A[7] - A[1] * A[8]) * i, (A[1] * A[5] - A[2] * A[4]) * i,
+        (A[5] * A[6] - A[3] * A[8]) * i, (A[0] * A[8] - A[2] * A[6]) * i, (A[2] * A[3] - A[0] * A[5]) * i,
+        (A[3] * A[7] - A[4] * A[6]) * i, (A[1] * A[6] - A[0] * A[7]) * i, (A[0] * A[4] - A[1] * A[3]) * i
+      ];
+    },
+    trace: A => A[0] + A[4] + A[8],
+    /* Higham's polar iteration: matrix -> nearest rotation (fallback path) */
+    ortho(A, iters) {
+      let R = A.slice();
+      for (let k = 0; k < (iters || 24); k++) {
+        const Ri = m3.inv(R);
+        if (!Ri.every(fin)) break;
+        const Rn = new Array(9);
+        for (let j = 0; j < 9; j++) Rn[j] = 0.5 * (R[j] + Ri[[0, 3, 6, 1, 4, 7, 2, 5, 8][j]]);
+        R = Rn;
+        // renormalise so the iteration cannot drift
+        const sc = Math.cbrt(Math.abs(m3.det(R))) || 1;
+        for (let j = 0; j < 9; j++) R[j] /= sc;
+      }
+      return R.every(fin) ? R : m3.id();
+    },
+    fromAxisAngle(ax, ang) {
+      const [x, y, z] = v3.norm(ax), c = Math.cos(ang), s = Math.sin(ang), t = 1 - c;
+      return [
+        c + x * x * t, x * y * t - z * s, x * z * t + y * s,
+        y * x * t + z * s, c + y * y * t, y * z * t - x * s,
+        z * x * t - y * s, z * y * t + x * s, c + z * z * t
+      ];
+    },
+    axisAngle(R) {
+      const th = Math.acos(clamp((m3.trace(R) - 1) / 2, -1, 1));
+      const s = Math.sin(th);
+      if (Math.abs(s) < 1e-6) return { axis: [0, 0, 1], angle: 0 };
+      return {
+        axis: [(R[7] - R[5]) / (2 * s), (R[2] - R[6]) / (2 * s), (R[3] - R[1]) / (2 * s)],
+        angle: th
+      };
+    }
+  };
+
+  /* ------------- symmetric 3x3 eigen (cyclic Jacobi, ~8 sweeps) ------- */
+  function eigenSym3(Ain, sweeps) {
+    const A = [Ain[0], Ain[1], Ain[2], Ain[3], Ain[4], Ain[5], Ain[6], Ain[7], Ain[8]];
+    let V = m3.id();
+    const pairs = [[0, 1], [0, 2], [1, 2]];
+    for (let sweep = 0; sweep < (sweeps || 12); sweep++) {
+      let off = 0;
+      for (const [p, q] of pairs) {
+        const apq = A[p * 3 + q];
+        off += Math.abs(apq);
+        if (Math.abs(apq) < 1e-15) continue;
+        const app = A[p * 3 + p], aqq = A[q * 3 + q];
+        const tau = (aqq - app) / (2 * apq);
+        const t = sign(tau || 1) / (Math.abs(tau) + Math.sqrt(1 + tau * tau));
+        const c = 1 / Math.sqrt(1 + t * t), s = t * c;
+        for (let k = 0; k < 3; k++) {          // A <- Jᵀ A J
+          const akp = A[k * 3 + p], akq = A[k * 3 + q];
+          A[k * 3 + p] = c * akp - s * akq;
+          A[k * 3 + q] = s * akp + c * akq;
+        }
+        for (let k = 0; k < 3; k++) {
+          const apk = A[p * 3 + k], aqk = A[q * 3 + k];
+          A[p * 3 + k] = c * apk - s * aqk;
+          A[q * 3 + k] = s * apk + c * aqk;
+        }
+        for (let k = 0; k < 3; k++) {          // V <- V J
+          const vkp = V[k * 3 + p], vkq = V[k * 3 + q];
+          V[k * 3 + p] = c * vkp - s * vkq;
+          V[k * 3 + q] = s * vkp + c * vkq;
+        }
+      }
+      if (off < 1e-13) break;
+    }
+    return {
+      vals: [A[0], A[4], A[8]],
+      vecs: V,                                  // column k = eigenvector k
+      col: k => [V[k], V[3 + k], V[6 + k]]
+    };
+  }
+
+  /* ------------------------------- SVD3 ------------------------------- */
+  /* A = U·diag(s)·Vᵀ with U and V *proper* rotations (det = +1).  When A
+     contains a reflection (det A < 0) that is expressed as a negative
+     smallest singular value, so the identity still holds exactly and no
+     caller can ever pick up a mirrored "rotation".                     */
+  function svd3(A) {
+    const At = m3.t(A);
+    const e = eigenSym3(m3.mul(At, A));
+    const order = [0, 1, 2].sort((i, j) => e.vals[j] - e.vals[i]);
+    const s = order.map(i => Math.sqrt(Math.max(e.vals[i], 0)));
+    if (!s.every(fin) || !(s[0] > 0)) return { U: m3.id(), V: m3.id(), s: [1, 1, 1] };
+    const v = order.map(i => e.col(i));
+    /* make the right-hand factor a rotation first */
+    let V = toMat(v);
+    if (m3.det(V) < 0) { v[2] = [-v[2][0], -v[2][1], -v[2][2]]; V = toMat(v); }
+    /* left-hand factor from the columns we can trust */
+    const u = [[], [], []];
+    const tol = s[0] * 1e-6;
+    let rank = 0;
+    for (let k = 0; k < 3; k++) {
+      if (s[k] > tol) { u[k] = v3.scale(m3.mv(A, v[k]), 1 / s[k]); rank++; }
+      else u[k] = null;
+    }
+    if (rank === 0) return { U: m3.id(), V, s: [0, 0, 0] };
+    /* complete an orthonormal basis for the null directions */
+    if (!u[0]) u[0] = [1, 0, 0];
+    u[0] = v3.norm(u[0]);
+    if (!u[1] || rank < 2) {
+      const helper = Math.abs(u[0][0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+      u[1] = v3.norm(v3.cross(u[0], helper));
+    } else {
+      u[1] = v3.norm(v3.sub(u[1], v3.scale(u[0], v3.dot(u[0], u[1]))));
+    }
+    u[2] = v3.cross(u[0], u[1]);
+    let U = toMat(u);
+    /* if A is a reflection, push the sign into the smallest singular value */
+    if (m3.det(U) < 0) {
+      u[2] = [-u[2][0], -u[2][1], -u[2][2]];
+      U = toMat(u);
+      s[2] = -s[2];
+    }
+    return { U, V, s, rank };
+  }
+  function toMat(cols) {                       // [c0, c1, c2] -> row-major
+    return [
+      cols[0][0], cols[1][0], cols[2][0],
+      cols[0][1], cols[1][1], cols[2][1],
+      cols[0][2], cols[1][2], cols[2][2]
+    ];
+  }
+
+  /* ------------------------------ kabsch ------------------------------ */
+  /* Weighted similarity fit  dst ≈ s·R·(src − ca) + cb,  R a proper
+     rotation (no reflections). This is the rigid head-pose solver and
+     also the identity bridge between the webcam canonical space and the
+     photo canonical space.                                            */
+  function kabsch(src, dst, weights) {
+    const n = Math.min(src.length, dst.length);
+    let sw = 0;
+    const ca = [0, 0, 0], cb = [0, 0, 0];
+    for (let i = 0; i < n; i++) {
+      const w = weights ? weights[i] : 1;
+      if (!(w > 0) || !fin3(src[i]) || !fin3(dst[i])) continue;
+      sw += w;
+      for (let k = 0; k < 3; k++) { ca[k] += w * src[i][k]; cb[k] += w * dst[i][k]; }
+    }
+    if (!(sw > 0)) return null;
+    for (let k = 0; k < 3; k++) { ca[k] /= sw; cb[k] /= sw; }
+    const H = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let na = 0, nb = 0, used = 0;
+    for (let i = 0; i < n; i++) {
+      const w = weights ? weights[i] : 1;
+      if (!(w > 0) || !fin3(src[i]) || !fin3(dst[i])) continue;
+      const a = v3.sub(src[i], ca), b = v3.sub(dst[i], cb);
+      for (let r = 0; r < 3; r++)
+        for (let c = 0; c < 3; c++) H[r * 3 + c] += w * b[r] * a[c];
+      na += w * v3.dot(a, a);
+      nb += w * v3.dot(b, b);
+      used++;
+    }
+    if (used < 3 || na <= 1e-9) return null;
+    let { U, V } = svd3(H);
+    let R = m3.mul(U, m3.t(V));
+    if (!R.every(fin) || m3.det(R) < 0) {
+      U = [U[0], U[1], U[2], U[3], U[4], U[5], -U[6], -U[7], -U[8]];
+      R = m3.mul(U, m3.t(V));
+    }
+    if (!R.every(fin)) R = m3.id();
+    // optimal isotropic scale for the chosen rotation
+    let num = 0, den = 0;
+    for (let i = 0; i < n; i++) {
+      const w = weights ? weights[i] : 1;
+      if (!(w > 0) || !fin3(src[i]) || !fin3(dst[i])) continue;
+      const a = v3.sub(src[i], ca), b = v3.sub(dst[i], cb);
+      num += w * v3.dot(b, m3.mv(R, a));
+      den += w * v3.dot(a, a);
+    }
+    let s = den > 1e-9 ? num / den : 1;
+    if (!fin(s) || s <= 1e-4) s = Math.sqrt(nb / na) || 1;
+    const t = [cb[0] - s * (R[0] * ca[0] + R[1] * ca[1] + R[2] * ca[2]),
+               cb[1] - s * (R[3] * ca[0] + R[4] * ca[1] + R[5] * ca[2]),
+               cb[2] - s * (R[6] * ca[0] + R[7] * ca[1] + R[8] * ca[2])];
+    let err = 0;
+    for (let i = 0; i < n; i++) {
+      const w = weights ? weights[i] : 1;
+      if (!(w > 0) || !fin3(src[i]) || !fin3(dst[i])) continue;
+      const p = v3.add(v3.scale(m3.mv(R, v3.sub(src[i], ca)), s), cb);
+      err += w * v3.dist(p, dst[i]) ** 2;
+    }
+    return { R, t, s, ca, cb, rms: Math.sqrt(err / sw), n: used };
+  }
+
+  /* ---------------------------- quaternion ---------------------------- */
+  function quatFromMat(R) {
+    const tr = m3.trace(R);
+    let q;
+    if (tr > 0) {
+      const s = Math.sqrt(tr + 1) * 2;
+      q = [(R[7] - R[5]) / s, (R[2] - R[6]) / s, (R[3] - R[1]) / s, 0.25 * s];
+    } else if (R[0] > R[4] && R[0] > R[8]) {
+      const s = Math.sqrt(1 + R[0] - R[4] - R[8]) * 2;
+      q = [0.25 * s, (R[1] + R[3]) / s, (R[2] + R[6]) / s, (R[7] - R[5]) / s];
+    } else if (R[4] > R[8]) {
+      const s = Math.sqrt(1 + R[4] - R[0] - R[8]) * 2;
+      q = [(R[1] + R[3]) / s, 0.25 * s, (R[5] + R[7]) / s, (R[2] - R[6]) / s];
+    } else {
+      const s = Math.sqrt(1 + R[8] - R[0] - R[4]) * 2;
+      q = [(R[2] + R[6]) / s, (R[5] + R[7]) / s, 0.25 * s, (R[3] - R[1]) / s];
+    }
+    return quatNorm(q);
+  }
+  function quatNorm(q) {
+    const l = Math.hypot(q[0], q[1], q[2], q[3]) || 1;
+    return [q[0] / l, q[1] / l, q[2] / l, q[3] / l];
+  }
+  function matFromQuat(q) {
+    const [x, y, z, w] = quatNorm(q);
+    return [
+      1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w),
+      2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
+      2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)
+    ];
+  }
+  function quatMul(a, b) {
+    return [
+      a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+      a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+      a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+      a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]
+    ];
+  }
+  const quatConj = q => [-q[0], -q[1], -q[2], q[3]];
+  function quatSlerp(a, b, t) {
+    let d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+    let bb = b;
+    if (d < 0) { bb = [-b[0], -b[1], -b[2], -b[3]]; d = -d; }
+    if (d > 0.9995) return quatNorm([lerp(a[0], bb[0], t), lerp(a[1], bb[1], t), lerp(a[2], bb[2], t), lerp(a[3], bb[3], t)]);
+    const th = Math.acos(clamp(d, -1, 1)), s = Math.sin(th);
+    const wa = Math.sin((1 - t) * th) / s, wb = Math.sin(t * th) / s;
+    return quatNorm([a[0] * wa + bb[0] * wb, a[1] * wa + bb[1] * wb, a[2] * wa + bb[2] * wb, a[3] * wa + bb[3] * wb]);
+  }
+  const quatAngle = q => 2 * Math.acos(clamp(Math.abs(q[3]), -1, 1));
+  /* rate-of-change limiter for rotations: never turn faster than maxRad/s */
+  function quatSlew(cur, target, dt, maxRadPerSec) {
+    const maxStep = maxRadPerSec * dt;
+    const q = quatNorm(cur || [0, 0, 0, 1]), t = quatNorm(target);
+    const d = q[0] * t[0] + q[1] * t[1] + q[2] * t[2] + q[3] * t[3];
+    const tt = d < 0 ? [-t[0], -t[1], -t[2], -t[3]] : t;
+    const ang = 2 * Math.acos(clamp(Math.abs(d), -1, 1));
+    if (!fin(ang) || ang <= maxStep) return tt;
+    return quatSlerp(q, tt, maxStep / ang);
+  }
+  /* small-angle smoothing in quaternion space (dt aware) */
+  function quatFollow(cur, target, dt, rate) {
+    const a = 1 - Math.exp(-(rate || 12) * (dt || 1 / 60));
+    return quatSlerp(quatNorm(cur || [0, 0, 0, 1]), quatNorm(target), clamp01(a));
+  }
+  /* yaw / pitch / roll with R = Ry(yaw)·Rx(pitch)·Rz(roll), exact inverse
+     of eulerFromQuat below. Angles are radians, image convention
+     (x right, y down, z toward the viewer).                          */
+  function quatFromYPR(yaw, pitch, roll) {
+    const cy = Math.cos(yaw / 2), sy = Math.sin(yaw / 2);
+    const cp = Math.cos(pitch / 2), sp = Math.sin(pitch / 2);
+    const cr = Math.cos(roll / 2), sr = Math.sin(roll / 2);
+    return quatNorm([
+      cy * sp * cr + sy * cp * sr,
+      sy * cp * cr - cy * sp * sr,
+      cy * cp * sr - sy * sp * cr,
+      cy * cp * cr + sy * sp * sr
+    ]);
+  }
+  /* Inverse of quatFromYPR. Conventions, in image space
+     (x right, y down, z toward the viewer):
+       yaw   > 0  nose swings toward +x   (head turns to image-right)
+       pitch > 0  nose swings toward -y   (head looks up)
+       roll  > 0  +x rotates toward +y, i.e. the image-right side dips */
+  function eulerFromQuat(q) {
+    const [x, y, z, w] = quatNorm(q);
+    const R = matFromQuat([x, y, z, w]);
+    // R = Ry(yaw)·Rx(pitch)·Rz(roll)  →
+    //   R[2]=sin(yaw)cos(pitch)  R[8]=cos(yaw)cos(pitch)
+    //   R[5]=-sin(pitch)         R[3]=cos(pitch)sin(roll)  R[4]=cos(pitch)cos(roll)
+    const pitch = Math.asin(clamp(-R[5], -1, 1));
+    const yaw = Math.atan2(R[2], R[8]);
+    const roll = Math.atan2(R[3], R[4]);
+    return { yaw, pitch, roll };
+  }
+
+  /* ------------------------------ filters ----------------------------- */
+  const alphaFor = (cut, dt) => {
+    const r = 2 * Math.PI * Math.max(cut, 0.01) * Math.max(dt, 1e-4);
+    return r / (r + 1);
+  };
+  /* One-euro filter (Casiez et al. 2012): jitter-free when still, low
+     latency when moving. fc = base cutoff Hz, beta = speed coupling.   */
+  function oneEuro(fc, beta, dcut) {
+    return { x: null, dx: 0, t: -1, fc: fc === undefined ? 1.6 : fc, beta: beta === undefined ? 0.02 : beta, dcut: dcut === undefined ? 1 : dcut };
+  }
+  function oneEuroRun(f, x, t) {
+    if (!fin(x)) return f.x === null ? 0 : f.x;
+    if (f.x === null || f.t < 0) { f.x = x; f.t = t; return x; }
+    let dt = (t - f.t) / 1000;
+    if (!(dt > 0)) dt = 1 / 60;
+    if (dt > 0.25) dt = 0.25;
+    f.t = t;
+    const dx = (x - f.x) / dt;
+    f.dx = f.dx + alphaFor(f.dcut, dt) * (dx - f.dx);
+    const cut = f.fc + f.beta * Math.abs(f.dx);
+    const a = alphaFor(cut, dt);
+    f.x = f.x + a * (x - f.x);
+    if (!fin(f.x)) f.x = x;
+    return f.x;
+  }
+  const oneEuroReset = f => { f.x = null; f.dx = 0; f.t = -1; };
+  /* running extreme with slow decay: normalises "eyes wide open" without
+     the unbounded drift of a plain running max.                        */
+  function ratioTracker(init, decay) {
+    return { v: init, decay: decay === undefined ? 0.9985 : decay };
+  }
+  function ratioTrack(rt, x) {
+    if (!fin(x)) return rt.v;
+    rt.v = Math.max(rt.v * rt.decay, x);
+    rt.v = Math.max(rt.v, 1e-3);
+    return rt.v;
+  }
+
+  /* ----------------------------- geometry ----------------------------- */
+  function polyArea(pts) {
+    let a = 0;
+    for (let i = 0, n = pts.length; i < n; i++) {
+      const p = xy2(pts[i]), q = xy2(pts[(i + 1) % n]);
+      a += p[0] * q[1] - q[0] * p[1];
+    }
+    return a / 2;
+  }
+  /* A polygon is safe to use as a canvas clip only if every point is
+     finite and it encloses real area. Degenerate clips are the classic
+     source of full-canvas flashes, so every clip goes through this.   */
+  function polyOK(pts, minArea) {
+    if (!pts || pts.length < 3) return false;
+    let area = 0, ok = true;
+    for (let i = 0, n = pts.length; i < n; i++) {
+      const p = xy2(pts[i]), q = xy2(pts[(i + 1) % n]);
+      if (!fin2(p) || !fin2(q)) { ok = false; break; }
+      area += p[0] * q[1] - q[0] * p[1];
+    }
+    return ok && Math.abs(area / 2) >= (minArea === undefined ? 1.5 : minArea);
+  }
+  function bounds(pts) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const raw of pts) {
+      const p = xy2(raw);
+      if (!fin2(p)) continue;
+      if (p[0] < x0) x0 = p[0];
+      if (p[1] < y0) y0 = p[1];
+      if (p[0] > x1) x1 = p[0];
+      if (p[1] > y1) y1 = p[1];
+    }
+    return { x0, y0, x1, y1, w: x1 - x0, h: y1 - y0 };
+  }
+  /* closed Catmull-Rom through pts, resampled to `samples` points */
+  function splineClosed(pts, samples) {
+    const n = pts.length, out = [];
+    const at = i => pts[((i % n) + n) % n];
+    const segs = n, per = Math.max(2, Math.round((samples || n * 4) / segs));
+    for (let i = 0; i < segs; i++) {
+      const p0 = at(i - 1), p1 = at(i), p2 = at(i + 1), p3 = at(i + 2);
+      for (let k = 0; k < per; k++) {
+        const t = k / per, t2 = t * t, t3 = t2 * t;
+        out.push([
+          0.5 * ((2 * p1[0]) + (-p0[0] + p2[0]) * t + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3),
+          0.5 * ((2 * p1[1]) + (-p0[1] + p2[1]) * t + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
+        ]);
+      }
+    }
+    return out;
+  }
+  /* Catmull-Rom arc between three points, used by the tongue/teeth paths */
+  function quadPoint(a, b, c, t) {
+    const u = 1 - t;
+    return [u * u * a[0] + 2 * u * t * b[0] + t * t * c[0], u * u * a[1] + 2 * u * t * b[1] + t * t * c[1]];
+  }
+  function triArea2(a, b, c) {
+    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+  }
+  function pointInPoly(p, pts) {
+    let inside = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1];
+      if ((yi > p[1]) !== (yj > p[1]) && p[0] < ((xj - xi) * (p[1] - yi)) / ((yj - yi) || 1e-9) + xi) inside = !inside;
+    }
+    return inside;
+  }
+  /* blend weight along a polyline: 1 near `pts`, falling off with radius */
+  function polylineWeight(p, poly, radius) {
+    let best = Infinity;
+    for (let i = 0; i + 1 < poly.length; i++) {
+      const a = poly[i], b = poly[i + 1];
+      const vx = b[0] - a[0], vy = b[1] - a[1];
+      const wx = p[0] - a[0], wy = p[1] - a[1];
+      const L2 = vx * vx + vy * vy || 1e-9;
+      const t = clamp((wx * vx + wy * vy) / L2, 0, 1);
+      best = Math.min(best, Math.hypot(wx - vx * t, wy - vy * t));
+    }
+    return smoothstep(radius, radius * 0.35, best);
+  }
+
+  root.FM = {
+    clamp, clamp01, lerp, smoothstep, softLimit, sign, fin, fin2, fin3,
+    slew, follow, schmitt, envelope,
+    v3, m3, eigenSym3, svd3, kabsch,
+    quatFromMat, matFromQuat, quatMul, quatConj, quatSlerp, quatAngle, quatSlew, quatFollow,
+    quatFromYPR, eulerFromQuat, quatNorm,
+    alphaFor, oneEuro, oneEuroRun, oneEuroReset, ratioTracker, ratioTrack,
+    polyArea, polyOK, bounds, splineClosed, quadPoint, triArea2, pointInPoly, polylineWeight
+  };
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+
+<script data-src="src/puppet/engine.js">
+/* =====================================================================
+   FaceMirror · puppet engine  (DOM-free; needs only globalThis.FM + the
+   landmark tables below).  Everything that decides *where* the photo's
+   pixels go lives here, so tools/harness.mjs can drive it head-less.
+
+   Pipeline
+     detect  478 3D landmarks (photo)  -> lift into a canonical head space
+     track   webcam 478 3D landmarks   -> weighted Kabsch rigid fit
+     separate rigid pose from expression residual   (FaceVid2Vid split)
+     retarget expression into the photo's canonical space, region gains
+     rigid mandible (TMJ hinge) + linear-blend skinning for hair / neck
+     rotate + weak-perspective project -> 2D targets for every mesh point
+
+   Anti-flash invariants enforced here
+     · every dynamic value is rate limited (slew / one-euro / envelope)
+     · tracker dropouts decay toward the last good pose, never snap
+     · per-landmark expression deltas are clamped, so one bad blend shape
+       can never tear the mesh
+     · booleans that gate drawing passes are hysteresis-free envelopes
+       that live in [0,1] and are never compared against a raw threshold
+   ===================================================================== */
+(function (root) {
+  'use strict';
+  const FM = root.FM;
+  if (!FM) throw new Error('FaceMirror engine: src/math.js must load first');
+  const { clamp, clamp01, lerp, smoothstep, softLimit, slew, envelope, oneEuro, oneEuroRun, oneEuroReset,
+          kabsch, v3, m3, quatFromMat, matFromQuat, quatFromYPR, eulerFromQuat, quatSlerp, quatAngle,
+          quatSlew, quatFollow, quatNorm, ratioTracker, ratioTrack, splineClosed, polyArea, bounds } = FM;
+
+  /* ===================================================================
+     1. Landmark tables (MediaPipe Face Mesh, 478 points)
+     =================================================================== */
+  const OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377,
+    152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
+  const CONTOUR = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377,
+    152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
+  const LEYE = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246];
+  const REYE = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398];
+  const LBROW = [70, 63, 105, 66, 107, 55, 65, 52, 53, 46];
+  const RBROW = [300, 293, 334, 296, 336, 285, 295, 282, 283, 276];
+  const LIPS_O = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185];
+  const LIPS_I = [78, 82, 13, 312, 308, 317, 14, 87];
+  const NOSE = [168, 6, 197, 195, 5, 4, 1, 19, 94, 2, 98, 327, 129, 358, 219, 439, 218, 438, 115, 344,
+    49, 279, 48, 278, 64, 294, 102, 331, 128, 357, 114, 343, 217, 437];
+  /* upper / lower inner lip run (used to hang teeth and the tongue) */
+  const UP_LIP = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308];
+  const LO_LIP = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308];
+  const LIDS = { L: { up: [159, 158, 160, 161, 157], lo: [145, 153, 144, 154, 163], ic: 133, oc: 33 },
+                 R: { up: [386, 385, 387, 388, 384], lo: [374, 380, 373, 381, 390], ic: 362, oc: 263 } };
+  const EYE_RING = { L: LEYE, R: REYE };
+  /* 3D eyeball centres come from the mesh's inner-corner + iris ring */
+  const IRIS = { L: { c: 468, ring: [469, 470, 471, 472] }, R: { c: 473, ring: [474, 475, 476, 477] } };
+  /* rigid subset — forehead, brow ridge, nose bridge, temples.  These
+     barely change with expression, so they carry the pose estimate.  */
+  const RIGID = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 93, 234, 127, 162, 21, 54, 103, 67, 109,
+    168, 6, 197, 195, 5, 4, 1, 19, 94, 2, 9, 8, 107, 336, 296, 334, 293, 300, 285, 276, 283, 282, 295,
+    55, 65, 52, 53, 46, 285, 300, 293, 334, 296, 336, 70, 63, 105, 66, 107, 9, 151, 108, 337, 299, 333,
+    298, 301, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377];
+  const RIGID_W = i => {
+    if (i <= 467) {
+      if (i === 152 || i === 148 || i === 176 || i === 149 || i === 150 || i === 136 || i === 377 || i === 400 ||
+          i === 378 || i === 379 || i === 365 || i === 397 || i === 288 || i === 361 || i === 323 || i === 454) return 0.15; // jaw line
+      if (LIPS_I.includes(i) || LIPS_O.includes(i) || i === 13 || i === 14 || i === 17 || i === 0) return 0.05;
+      if (i === 468 || i >= 469) return 0;
+    }
+    return 1;
+  };
+  /* landmarks whose depth the detector is least sure about (temples, ears,
+     jaw, hairline) — these lean on the analytic ellipsoid prior instead  */
+  const SIDEY = [234, 93, 132, 58, 172, 136, 150, 149, 176, 148, 152, 377, 400, 378, 379, 365, 397, 288,
+    361, 323, 454, 127, 162, 21, 54, 103, 67, 109, 10, 338, 297, 332, 284, 251, 389, 356];
+
+  const EXPR_GAIN = i => {
+    if (i >= 468) return 0;                              // irises are rigid
+    if (LIPS_I.includes(i) || LIPS_O.includes(i)) return 1.0;
+    if (UP_LIP.includes(i) || LO_LIP.includes(i)) return 1.0;
+    if (LIDS.L.up.includes(i) || LIDS.L.lo.includes(i) || LIDS.R.up.includes(i) || LIDS.R.lo.includes(i)) return 1.0;
+    if (LEYE.includes(i) || REYE.includes(i)) return 0.9;
+    if (LBROW.includes(i) || RBROW.includes(i)) return 0.85;
+    if (NOSE.includes(i)) return 0.5;
+    if (RIGID_W(i) <= 0.15) return 0.25;
+    return 0.45;                                          // cheeks
+  };
+  /* per-landmark anatomical cap for a single expression delta, in face widths */
+  const EXPR_CAP = i => {
+    if (LIPS_I.includes(i) || LIPS_O.includes(i)) return 0.16;
+    if (UP_LIP.includes(i) || LO_LIP.includes(i)) return 0.13;
+    if (LBROW.includes(i) || RBROW.includes(i)) return 0.12;
+    return 0.07;
+  };
+
+  /* ===================================================================
+     2. Canonical head space
+     A photo is 2.5D: MediaPipe's z is relative and noisy.  We blend it
+     with an analytic head prior (ellipsoid + nose wedge) and then smooth
+     the depth over the mesh, which keeps the surface C1 enough that the
+     triangle pass cannot fold on a turn.
+     =================================================================== */
+  /* MediaPipe hands back NormalizedLandmark objects ({x,y,z}); some of our
+     own tests feed [x,y,z] tuples.  Accept both, everywhere.            */
+  const lx = p => (p.x !== undefined ? p.x : p[0]);
+  const ly = p => (p.y !== undefined ? p.y : p[1]);
+  const lz = p => (p.z !== undefined ? p.z : p[2]);
+
+  function faceCenterOf(P) {
+    let cx = 0, cy = 0, n = 0;
+    for (const i of [4, 168, 6, 197, 152, 10, 33, 133, 362, 263]) {
+      cx += P[i][0]; cy += P[i][1]; n++;
+    }
+    return [cx / n, cy / n];
+  }
+  function buildCanonical(lm, W, H, opts) {
+    const o = opts || {};
+    const P = new Array(478);
+    for (let i = 0; i < 478; i++) {
+      const p = lm[i];
+      if (!p) return null;
+      const z = lz(p);
+      P[i] = [lx(p) * W, ly(p) * H, -(isFinite(z) ? z : 0) * W];   // +z = toward the viewer
+    }
+    const fw = Math.hypot(P[454][0] - P[234][0], P[454][1] - P[234][1]) || W * 0.2;
+    const fh = Math.hypot(P[152][0] - P[10][0], P[152][1] - P[10][1]) || fw * 1.35;
+    const mid = [(P[234][0] + P[454][0]) / 2, (P[10][1] + P[152][1]) / 2];
+    const ctr = faceCenterOf(P);
+    /* --- analytic depth prior: an ellipsoid whose pole is the nose --- */
+    const rx = fw * 0.78, ry = fh * 0.92, rz = fw * 0.62;
+    const noseY = [4, 5, 6].reduce((a, i) => a + P[i][1], 0) / 3;
+    const prior = i => {
+      const u = (P[i][0] - ctr[0]) / rx, v = (P[i][1] - (ctr[1] + fh * 0.06)) / ry;
+      const q = 1 - u * u - v * v;
+      let z = q > 0 ? rz * Math.sqrt(q) : 0;
+      /* nose ridge: raise the midline from noseY up to the brow */
+      const nearMid = 1 - Math.min(1, Math.abs(P[i][0] - mid[0]) / (fw * 0.34));
+      const up = clamp01((noseY + fh * 0.34 - P[i][1]) / (fh * 0.5));
+      z += rz * 0.30 * nearMid * up * up;
+      return z;
+    };
+    /* --- blend detector depth with the prior, then Laplacian-smooth --- */
+    const sideSet = new Set(SIDEY);
+    const z = new Float32Array(478);
+    let zSum = 0;
+    for (let i = 0; i < 478; i++) zSum += P[i][2];
+    const zMean = zSum / 478;
+    for (let i = 0; i < 478; i++) {
+      const w = sideSet.has(i) ? (o.priorSide === undefined ? 0.62 : o.priorSide) : (o.priorMid === undefined ? 0.22 : o.priorMid);
+      z[i] = lerp(P[i][2] - zMean, prior(i), w);
+    }
+    /* neighbour graph from the official tessellation, if present */
+    const adj = o.adjacency;
+    if (adj) {
+      const tmp = new Float32Array(478);
+      for (let it = 0; it < (o.smoothIters === undefined ? 6 : o.smoothIters); it++) {
+        for (let i = 0; i < 478; i++) {
+          const nb = adj[i];
+          if (!nb || !nb.length) { tmp[i] = z[i]; continue; }
+          let s = 0;
+          for (let k = 0; k < nb.length; k++) s += z[nb[k]];
+          tmp[i] = z[i] * 0.45 + (s / nb.length) * 0.55;
+        }
+        z.set(tmp);
+      }
+    }
+    for (let i = 0; i < 478; i++) P[i][2] = z[i];
+    return { P, fw, fh, mid, ctr, noseY, W, H };
+  }
+  /* convenience: head-local normalised coords of a canonical point */
+  function localUV(head, p) {
+    return [(p[0] - head.ctr[0]) / head.fw, (p[1] - head.ctr[1]) / head.fh, p[2] / head.fw];
+  }
+
+  /* ===================================================================
+     3. Mesh: face + hair rings + body skirt, one static triangulation
+     =================================================================== */
+  function buildMesh(head, opts) {
+    const o = opts || {};
+    const P = head.P.map(p => p.slice());          // canonical 3D
+    const n0 = P.length;                           // 478
+    const w = [];                                  // shell weight per point
+    const kind = [];                               // 0 face, 1 ring, 2 skirt
+    for (let i = 0; i < n0; i++) { w.push(1); kind.push(0); }
+    /* ---- hair rings: a shell that wraps around the skull -------------
+       ring 1 hugs the head (moves with it, hair lag), ring 3 sits well
+       behind the head centre so a 45° turn reveals a plausible cranium
+       instead of a paper edge.                                        */
+    const ringDefs = [[1.16, 0.92, 0.10], [1.52, 0.45, 0.42], [2.10, 0.16, 0.95]];
+    const rings = [];
+    for (let r = 0; r < ringDefs.length; r++) {
+      const [f, wr, back] = ringDefs[r];
+      const idxs = [];
+      for (const c of CONTOUR) {
+        const p = head.P[c];
+        let x = head.ctr[0] + (p[0] - head.ctr[0]) * f;
+        let y = head.ctr[1] + (p[1] - head.ctr[1]) * f;
+        const R = Math.max(head.fw, head.fh) * 0.5;
+        let z = lerp(p[2], -back * R, clamp01((f - 1) / 1.1));
+        /* keep the top of each ring a little forward (skull, not sphere) */
+        const up = clamp01((head.ctr[1] - y) / (head.fh * 0.9) + 0.5);
+        z += R * 0.18 * (1 - up) * 0;
+        x = clamp(x, 0, head.W);
+        y = clamp(y, 0, head.H);
+        const id = P.length;
+        P.push([x, y, z]);
+        w.push(wr);
+        kind.push(1);
+        idxs.push(id);
+      }
+      rings.push(idxs);
+    }
+    /* ---- body skirt: pinned background banner below the chin --------- */
+    const skirt = [];
+    const chin = head.P[152], chinY = chin[1], botY = head.H;
+    if (botY > chinY + 8) {
+      for (let r = 0; r < 2; r++) {
+        const y = chinY + head.fh * 0.35 + (botY - (chinY + head.fh * 0.35)) * (r ? 0.75 : 0.25);
+        for (let q = 0; q < 7; q++) {
+          const x = head.W * (q + 0.5) / 7;
+          const im = P.length; P.push([x, y, -head.fw * 0.2]); w.push(0); kind.push(2); skirt.push(im);
+        }
+      }
+    }
+    /* ---- corners: pin the frame so nothing detaches ------------------ */
+    const corners = [];
+    const W = head.W, H = head.H;
+    for (const [x, y] of [[0, 0], [W, 0], [W, H], [0, H], [W / 2, 0], [W / 2, H], [0, H / 2], [W, H / 2]]) {
+      const im = P.length; P.push([x, y, -head.fw * 0.4]); w.push(0); kind.push(2); corners.push(im);
+    }
+    /* ---- triangulate (Delaunator over the source-plane layout) ------- */
+    const D = o.delaunay || root.Delaunator;
+    if (!D) throw new Error('engine: Delaunator missing');
+    const tri = D.from(P.map(p => [p[0], p[1]])).triangles;
+    const base = [];
+    for (let i = 0; i < tri.length; i += 3) base.push(tri[i], tri[i + 1], tri[i + 2]);
+    /* ---- official face tessellation -> triangles, drawn over the base.
+       MediaPipe ships the mesh as an edge list, so triangles are the
+       cliques of three mutually connected landmarks (as in the original
+       face-mesh demo).  Emitting each triangle once keeps the pass
+       deterministic, which matters for painter ordering.              */
+    const face = [];
+    if (o.tessellation) {
+      const adjSets = Array.from({ length: 478 }, () => new Set());
+      for (const c of o.tessellation) {
+        if (c.start < 478 && c.end < 478) { adjSets[c.start].add(c.end); adjSets[c.end].add(c.start); }
+      }
+      for (let a = 0; a < 478; a++) {
+        for (const b of adjSets[a]) {
+          if (b <= a) continue;
+          for (const c of adjSets[b]) {
+            if (c <= b) continue;
+            if (adjSets[a].has(c)) face.push(a, b, c);
+          }
+        }
+      }
+    }
+    /* adjacency for the depth smoother + nearest-neighbour drag falloff */
+    const nbr = Array.from({ length: P.length }, () => new Set());
+    for (let i = 0; i < base.length; i += 3) {
+      const a = base[i], b = base[i + 1], c = base[i + 2];
+      nbr[a].add(b); nbr[b].add(a); nbr[b].add(c); nbr[c].add(b); nbr[c].add(a); nbr[a].add(c);
+    }
+    /* ring index -> face contour index (for the silhouette + hair lag) */
+    const ringOf = [];
+    for (let r = 0; r < rings.length; r++) for (let k = 0; k < rings[r].length; k++) ringOf.push({ ring: r, contour: k });
+    return { P, w: Float32Array.from(w), kind: Uint8Array.from(kind), rings, skirt, corners, base, face, nbr, ringOf, n: P.length };
+  }
+
+  /* ===================================================================
+     4. Expression field — parametric deltas in canonical space
+     Defined in head-local coordinates, so a smile rides the face while
+     the head turns instead of smearing across the screen.
+     =================================================================== */
+  const ACTIONS = ['sL', 'sR', 'j', 'bu', 'buR', 'bi', 'bd', 'eo', 'sq', 'dr', 'pk', 'fr', 'nz', 'ur',
+                   'st', 'bL', 'bR', 'tg', 'gx', 'gy', 'ck', 'wv'];
+  const zeroActions = () => { const o = {}; for (const k of ACTIONS) o[k] = 0; return o; };
+  const PRESETS = {
+    'Neutral': {},
+    'Smile': { sL: 0.55, sR: 0.55, sq: 0.10, ck: 0.25 },
+    'Big smile': { sL: 0.92, sR: 0.92, j: 0.16, sq: 0.30, bu: 0.12, ck: 0.55 },
+    'Laugh': { sL: 1, sR: 1, j: 0.52, sq: 0.5, bu: 0.18, nz: 0.18, ck: 0.7 },
+    'Smirk': { sR: 0.78, bu: 0.10, ck: 0.2 },
+    'Sad': { fr: 0.72, bi: 0.9, dr: 0.3, j: 0.04, gy: 0.8 },
+    'Angry': { bd: 0.9, fr: 0.5, sq: 0.3, nz: 0.35, ur: 0.15 },
+    'Surprised': { bu: 0.9, eo: 0.85, j: 0.5 },
+    'Fear': { bu: 0.55, bi: 0.7, eo: 0.75, j: 0.28, st: 0.7 },
+    'Disgust': { nz: 0.9, ur: 0.7, bd: 0.35, fr: 0.35, sq: 0.25 },
+    'Skeptical': { buR: 0.8, bd: 0.25, sR: 0.28, dr: 0.15 },
+    'Sleepy': { dr: 0.68, j: 0.1 },
+    'Wink': { bL: 1, sL: 0.45, sR: 0.45, sq: 0.1 },
+    'Kiss': { pk: 1, bu: 0.1 },
+    'Tongue out': { tg: 1, j: 0.3 },
+    'Look left': { gx: -1 }, 'Look right': { gx: 1 }, 'Look up': { gy: -1 }, 'Look down': { gy: 1 },
+    'Talking': null
+  };
+  /* Deterministic pseudo-speech for the preset "Talking" (no audio) */
+  function talkAt(t) {
+    const s = (k, ph) => Math.abs(Math.sin(k * 127.1 + ph) * 43758.5453) % 1;
+    const e = clamp01(Math.sin(t * 0.72) * 3 + 1.15);
+    const g = t * 4.3, k = Math.floor(g), f = g - k;
+    const o = Math.pow(Math.sin(Math.PI * f), 0.7) * e;
+    const h = s(k, 0), h2 = s(k, 3.1);
+    const round = h > 0.68;
+    return {
+      j: o * (0.10 + 0.42 * h),                       // jaw open, vowel height
+      pk: round ? o * 0.85 : o * 0.12,                // rounded vowels
+      st: h2 < 0.26 ? o * 0.6 : 0,                    // tongue tip for dentals
+      sL: 0.10 + 0.12 * h, sR: 0.10 + 0.12 * h,       // mouth corners spread
+      bu: e * 0.10 * h2, ck: 0.2
+    };
+  }
+  /* Build the per-landmark 3D expression delta (canonical px units). */
+  function expressionDelta(head, A, out) {
+    const d = out || new Float32Array(478 * 3);
+    d.fill(0);
+    const { fw, fh, ctr, mid, noseY } = head;
+    const cx = mid[0], yMouth = (head.P[13][1] + head.P[14][1]) / 2;
+    const eyeY = (head.P[159][1] + head.P[386][1]) / 2;
+    const SD = v => (v >= 0 ? 1 : -1);
+    for (let i = 0; i < 478; i++) {
+      const p = head.P[i];
+      const u = clamp((p[0] - cx) / (fw * 0.5), -1.7, 1.7);
+      const au = Math.min(1, Math.abs(u));
+      const side = u < 0 ? 0 : 1;
+      const sm = side ? A.sR : A.sL;
+      const v = (p[1] - eyeY) / fh;
+      let dx = 0, dy = 0, dz = 0;
+      /* ---- mouth ---------------------------------------------------- */
+      const mouthMask = Math.exp(-(((p[0] - cx) / (fw * 0.55)) ** 2) - ((p[1] - yMouth) / (fh * 0.22)) ** 2);
+      if (mouthMask > 0.004) {
+        const lift = clamp01((v - 0.05) / 0.4);          // 0 at the vermilion, 1 at the chin
+        const up = 1 - lift;
+        const smileAmt = sm * mouthMask;
+        dy += (-smileAmt * fh * 0.20 * au * au * up - A.fr * fh * 0.16 * au * au * up);
+        dx += u * (smileAmt * 0.09 + A.st * 0.14) * fw * au * mouthMask;
+        dy += A.ur * fh * 0.10 * up * (1 - au * 0.5);
+        dz += (A.eo * 0.35 + A.pk * 0.55) * fw * 0.06 * mouthMask;
+        /* pucker: lips gather toward the mouth axis and curl outward */
+        const pk = A.pk * mouthMask;
+        dx -= u * fw * 0.30 * pk * 0.55;
+        dy -= 0;
+      }
+      /* ---- cheeks / lower lids -------------------------------------- */
+      const cheek = Math.exp(-(((Math.abs(p[0] - cx) - fw * 0.34) / (fw * 0.3)) ** 2) -
+                             (((p[1] - (eyeY + fh * 0.30)) / (fh * 0.22)) ** 2));
+      if (cheek > 0.004) {
+        dy -= sm * fh * 0.07 * cheek + A.ck * fh * 0.05 * cheek;
+        dx += SD(p[0] - cx) * sm * fw * 0.035 * cheek;
+        dz += A.ck * fw * 0.05 * cheek;
+      }
+      /* ---- brows ---------------------------------------------------- */
+      if (LBROW.includes(i) || RBROW.includes(i)) {
+        const inner = Math.abs(p[0] - cx) < fw * 0.14;
+        dy -= (A.bu + (side ? A.buR : 0)) * fh * 0.075;
+        dy -= inner ? A.bi * fh * 0.075 : -A.bi * fh * 0.02;
+        dy += A.bd * fh * (inner ? 0.06 : 0.035);
+        dx += inner ? -SD(p[0] - cx) * A.bd * fh * 0.024 : 0;
+      }
+      /* ---- nose scrunch / disgust ----------------------------------- */
+      if (NOSE.includes(i)) {
+        dy -= A.nz * fh * 0.03 * (Math.abs(p[0] - cx) < fw * 0.3 ? 1 : 0.5);
+        dx += (p[0] > cx ? 1 : -1) * A.ur * fw * 0.02;
+      }
+      /* ---- eyes: squint narrows the aperture ------------------------ */
+      const eyeMask = Math.exp(-(((Math.abs(p[0] - cx) - fw * 0.24) / (fw * 0.17)) ** 2) - ((p[1] - eyeY) / (fh * 0.09)) ** 2);
+      if (eyeMask > 0.004) {
+        const isUpper = p[1] < eyeY;
+        dy += (isUpper ? 1 : -0.55) * A.sq * fh * 0.05 * eyeMask;
+      }
+      const g3 = i * 3;
+      d[g3] += dx; d[g3 + 1] += dy; d[g3 + 2] += dz;
+    }
+    return d;
+  }
+  /* mouth-shape readout from the current photo mesh (drives teeth/tongue) */
+  function mouthState(head, D, idx) {
+    const g = (a, b) => Math.hypot(D[a].x - D[b].x, D[a].y - D[b].y);
+    const mw = g(61, 291) || head.fw * 0.4;
+    const gap = g(13, 14);
+    return { mw, gap, open: clamp01((gap / mw - 0.045) / 0.30), wide: clamp01((mw / head.fw - 0.30) / 0.25) };
+  }
+
+  /* ===================================================================
+     5. Expression transfer from the webcam (FaceVid2Vid style split)
+     =================================================================== */
+  function makeTransfer(head) {
+    return { residual: new Float32Array(478 * 3), mix: new Float32Array(478) };
+  }
+  /* residual (canonical units) -> photo delta, region gains + caps.
+     `out` lets the caller reuse one buffer (no per-frame allocation).  */
+  function retargetResidual(head, T, resid, gain, out) {
+    const d = out || new Float32Array(478 * 3);
+    d.fill(0);
+    const cap0 = head.fw * 0.25;
+    for (let i = 0; i < 478; i++) {
+      const g = EXPR_GAIN(i) * gain;
+      if (g <= 0) continue;
+      const g3 = i * 3;
+      let x = resid[g3] * g, y = resid[g3 + 1] * g, z = resid[g3 + 2] * g;
+      const n = Math.hypot(x, y, z);
+      const cap = Math.max(cap0, head.fw * EXPR_CAP(i) * 3);
+      if (n > cap) { const k = cap / n; x *= k; y *= k; z *= k; }
+      d[g3] = x; d[g3 + 1] = y; d[g3 + 2] = z;
+    }
+    return d;
+  }
+  /* expression energy of a residual — used for the tracker trust gate */
+  function residualEnergy(resid, n) {
+    let s = 0;
+    for (let i = 0; i < 478; i++) {
+      if (EXPR_GAIN(i) <= 0) continue;
+      const g3 = i * 3;
+      s += resid[g3] * resid[g3] + resid[g3 + 1] * resid[g3 + 1];
+    }
+    return Math.sqrt(s / (n || 1));
+  }
+
+  /* ===================================================================
+     6. Rigid mandible (TMJ hinge) + linear blend skinning
+     The jaw, lower teeth, tongue and chin share one bone, so an open
+     mouth never looks like a vertical smear.
+     =================================================================== */
+  function tmjAxis(head) {
+    /* hinge roughly 6% of face width above the mouth, passing through the
+       ear canal line — the classic TMJ approximation                     */
+    const a = head.P[234], b = head.P[454];
+    const y = (head.P[13][1] + head.P[14][1]) / 2 - head.fh * 0.10;
+    const zc = (head.P[234][2] + head.P[454][2]) / 2 - head.fw * 0.18;
+    return { p: [(a[0] + b[0]) / 2, y, zc], dir: v3.norm([b[0] - a[0], (b[1] - a[1]) * 0.35, (b[2] - a[2]) * 0.9]) };
+  }
+  const jawWeight = (i, head) => {
+    if (i >= 468) return 0;
+    const upper = UP_LIP.includes(i), lower = LO_LIP.includes(i);
+    if (upper || lower || LIPS_O.includes(i) || LIPS_I.includes(i)) {
+      if (upper && lower) return 0.42;               // mouth corners bridge both lips
+      if (upper) return 0.06;                        // maxilla / upper lip stays nearly rigid
+      if (lower) return 0.94;                        // lower lip follows the mandible
+      const midY = (head.P[13][1] + head.P[14][1]) * 0.5;
+      return clamp(0.5 + (head.P[i][1] - midY) / (head.fh * 0.02) * 0.45, 0.05, 0.95);
+    }
+    if (i === 152 || i === 148 || i === 176 || i === 149 || i === 150 || i === 136 || i === 377 || i === 400 ||
+        i === 378 || i === 379 || i === 365 || i === 397 || i === 288 || i === 361 || i === 323 || i === 454 ||
+        i === 17 || i === 0 || i === 18 || i === 200 || i === 199 || i === 175) return 1;
+    return 0.15;
+  };
+  function applyJaw(head, pts, angle, axis) {
+    if (Math.abs(angle) < 1e-4) return;
+    const R = m3.fromAxisAngle(axis.dir, angle);
+    for (let i = 0; i < 478; i++) {
+      const w = jawWeight(i, head);
+      if (w <= 0) continue;
+      const rel = v3.sub(head.P[i], axis.p);
+      const rot = m3.mv(R, rel);
+      const p = pts[i];
+      p[0] += (axis.p[0] + rot[0] - head.P[i][0]) * w;
+      p[1] += (axis.p[1] + rot[1] - head.P[i][1]) * w;
+      p[2] += (axis.p[2] + rot[2] - head.P[i][2]) * w;
+    }
+  }
+
+  /* ===================================================================
+     7. Tracker: 478 3D landmarks -> filtered pose + expression residual
+     =================================================================== */
+  function createTracker(head, opts) {
+    const o = opts || {};
+    const S = {
+      src: new Array(478),            // smoothed webcam canonical points
+      neutral: null,                  // webcam neutral (canonical, faceWidth = 1)
+      eo: new Array(478 * 3),         // one-euro filters per coordinate
+      knee: o.knee || 1.0,
+      q: [0, 0, 0, 1],                // smoothed head rotation
+      qTarget: [0, 0, 0, 1],
+      have: false,
+      lastSeen: -1e9,
+      trust: 0,                       // 0..1 tracker confidence envelope
+      residual: new Float32Array(478 * 3),
+      residPrev: new Float32Array(478 * 3),
+      scale: 1, ox: 0, oy: 0,
+      ypr: { yaw: 0, pitch: 0, roll: 0 },
+      yprF: {
+        yaw: oneEuro(o.yawFc || 1.5, o.yawBeta || 0.055, 1),
+        pitch: oneEuro(o.pitchFc || 1.2, o.pitchBeta || 0.045, 1),
+        roll: oneEuro(o.rollFc || 1.1, o.rollBeta || 0.04, 1)
+      },
+      tFx: oneEuro(2.2, 0.09, 1), tFy: oneEuro(2.2, 0.09, 1), sFx: oneEuro(0.9, 0.03, 1)
+    };
+    for (let i = 0; i < S.eo.length; i++) S.eo[i] = oneEuro(i >= 468 * 3 ? 2.0 : 2.6, 0.03, 1);
+    S.fast = new Set();                                  // lips get a faster cutoff
+    for (const i of LIPS_I) { S.fast.add(i * 3); S.fast.add(i * 3 + 1); S.fast.add(i * 3 + 2); }
+    for (const i of LIPS_O) { S.fast.add(i * 3); S.fast.add(i * 3 + 1); S.fast.add(i * 3 + 2); }
+    return S;
+  }
+  /* convert raw normalised landmarks into canonical px + one-euro smooth */
+  function trackerPush(S, lm, W, H, t) {
+    if (!lm || lm.length < 478) return false;
+    if (!S.src[0]) for (let i = 0; i < 478; i++) S.src[i] = [0, 0, 0];
+    const k = S.knee;
+    for (let i = 0; i < 478; i++) {
+      const p = lm[i];
+      if (!p) return false;
+      const X = lx(p), Y = ly(p), Z = lz(p);
+      if (!isFinite(X) || !isFinite(Y)) return false;
+      const raw = [X * W, Y * H, -(isFinite(Z) ? Z : 0) * W];
+      const g3 = i * 3;
+      S.src[i][0] = oneEuroRun(S.eo[g3], raw[0] / k, t);
+      S.src[i][1] = oneEuroRun(S.eo[g3 + 1], raw[1] / k, t);
+      /* lips move fast while speaking: a faster filter keeps consonants */
+      S.src[i][2] = oneEuroRun(S.eo[g3 + 2], raw[2] / k, t);
+    }
+    S.lastSeen = t;
+    S.have = true;
+    return true;
+  }
+  function trackerSetNeutral(S, W, H) {
+    const ctr = faceCenterOf(S.src);
+    const fw = Math.hypot(S.src[454][0] - S.src[234][0], S.src[454][1] - S.src[234][1]) || (W || 1) * 0.2;
+    const k = fw || 1;
+    S.neutral = S.src.map(p => [(p[0] - ctr[0]) / k, (p[1] - ctr[1]) / k, p[2] / k]);
+    S.knee = k;
+    S.neutralCtr = ctr;
+    S.neutralAt = performance_now();
+  }
+  function performance_now() { return (root.performance && root.performance.now) ? root.performance.now() : Date.now(); }
+  /* One tracker frame. Returns true when a fresh pose was produced. */
+  function trackerUpdate(S, dt, cfg) {
+    const c = cfg || {};
+    const t = performance_now();
+    const live = S.have && (t - S.lastSeen) < (c.dropoutMs || 420);
+    /* trust envelope: ramps in fast, decays over ~1 s (never snaps) */
+    S.trust = envelope(S.trust, live ? 1 : 0, dt, 9, 2.2);
+    if (!S.neutral) return false;
+    /* No fresh detection: decay pose/expression toward neutral instead of
+       freezing the last frame (a frozen pose reads as a hard cut).      */
+    if (!live) { trackerIdle(S, dt); return false; }
+    const n = S.neutral;
+    const Cf = S.src.map(p => [p[0], p[1], p[2]]);
+    const src = [], dst = [], wt = [];
+    for (const i of RIGID) {
+      const w = RIGID_W(i);
+      if (w <= 0) continue;
+      src.push(n[i]); dst.push([Cf[i][0], Cf[i][1], Cf[i][2]]); wt.push(w);
+    }
+    const f = kabsch(src, dst, wt);
+    if (!f) return false;
+    /* ---- expression residual = rigid-removed difference --------------- */
+    const Ri = m3.t(f.R);
+    const k = c.exprGain === undefined ? 1 : c.exprGain;
+    for (let i = 0; i < 478; i++) {
+      const a = v3.sub(Cf[i], f.cb);
+      const b = m3.mv(Ri, a);
+      const g3 = i * 3;
+      S.residual[g3] = (b[0] / f.s - n[i][0]) * k;
+      S.residual[g3 + 1] = (b[1] / f.s - n[i][1]) * k;
+      S.residual[g3 + 2] = (b[2] / f.s - n[i][2]) * k;
+    }
+    /* ---- pose -> yaw/pitch/roll, per-axis gain, soft limits ---------- */
+    const e = eulerFromQuat(quatFromMat(f.R));
+    const rad = 180 / Math.PI;
+    const gY = (c.yawGain === undefined ? 1 : c.yawGain);
+    const gP = (c.pitchGain === undefined ? 1 : c.pitchGain);
+    const gR = (c.rollGain === undefined ? 1 : c.rollGain);
+    const limY = (c.yawLimit === undefined ? 48 : c.yawLimit) / rad;
+    const limP = (c.pitchLimit === undefined ? 26 : c.pitchLimit) / rad;
+    const limR = (c.rollLimit === undefined ? 22 : c.rollLimit) / rad;
+    const yaw = softLimit(e.yaw * gY * rad, limY * rad) / rad;
+    const pitch = softLimit(e.pitch * gP * rad, limP * rad) / rad;
+    const roll = softLimit(e.roll * gR * rad, limR * rad) / rad;
+    S.ypr.yaw = oneEuroRun(S.yprF.yaw, yaw, t);
+    S.ypr.pitch = oneEuroRun(S.yprF.pitch, pitch, t);
+    S.ypr.roll = oneEuroRun(S.yprF.roll, roll, t);
+    S.qTarget = quatFromYPR(S.ypr.yaw, S.ypr.pitch, S.ypr.roll);
+    /* slew-limited slerp: bounds angular acceleration as well as speed */
+    S.q = quatSlew(S.q, quatFollow(S.q, S.qTarget, dt, c.poseRate || 26), dt, (c.poseSpeed || 5.4));
+    /* translation + scale ride the same trust envelope */
+    const tx = (f.cb[0] - f.ca[0]) / (S.knee || 1);
+    const ty = (f.cb[1] - f.ca[1]) / (S.knee || 1);
+    S.ox = oneEuroRun(S.tFx, tx, t) * S.trust;
+    S.oy = oneEuroRun(S.tFy, ty, t) * S.trust;
+    S.scale = 1 + (oneEuroRun(S.sFx, (f.s - 1) * (c.dolly === undefined ? 0.5 : c.dolly), t)) * S.trust;
+    return true;
+  }
+  /* when the tracker has no face, fade the pose to neutral instead of
+     freezing it (no visible pop when detection blinks)                  */
+  function trackerIdle(S, dt) {
+    S.q = quatSlew(S.q, quatSlerp(S.q, [0, 0, 0, 1], clamp01(dt * 0.9)), dt, 4);
+    S.ox = slew(S.ox, 0, dt, 0.5, 0.5);
+    S.oy = slew(S.oy, 0, dt, 0.5, 0.5);
+    S.scale = slew(S.scale, 1, dt, 0.35, 0.35);
+    for (let i = 0; i < S.residual.length; i++) S.residual[i] = slew(S.residual[i], 0, dt, 0.6, 0.6);
+  }
+
+  /* ===================================================================
+     8. Viseme / audio driver  (mic amplitude + spectral shape)
+     A miniature of the audio->viseme front ends (SadTalker/Wav2Lip use a
+     learned encoder): we band-limit the spectrum into four viseme
+     classes and drive jaw, pucker, spread and tongue with envelopes.
+     =================================================================== */
+  function createViseme() {
+    return {
+      env: 0, open: 0, round: 0, wide: 0, tip: 0, tone: 0,
+      bands: [0, 0, 0, 0], t: 0, active: false
+    };
+  }
+  function visemeUpdate(V, spec, rms, dt) {
+    if (!spec || !spec.length) return V;
+    const n = spec.length;
+    const band = (f0, f1) => {
+      const i0 = Math.max(0, Math.floor(f0 * n / 24000)), i1 = Math.min(n, Math.ceil(f1 * n / 24000));
+      let s = 0;
+      for (let i = i0; i < i1; i++) s += spec[i];
+      return s / Math.max(1, i1 - i0);
+    };
+    const lo = band(120, 700);      // F1 zone -> jaw / open vowels
+    const mid = band(700, 1800);    // F2 zone -> spread vs round
+    const hi = band(1800, 5000);    // sibilants -> tongue tip / spread
+    const tot = lo + mid + hi + 1e-6;
+    const lvl = clamp01((rms - 0.006) * 11);
+    V.env = envelope(V.env, lvl, dt, 22, 7);
+    V.open = envelope(V.open, V.env * clamp01(lo / tot * 1.9), dt, 18, 6);
+    V.round = envelope(V.round, V.env * clamp01(mid / tot * 2.1) * (1 - clamp01(hi / tot * 2.4)), dt, 13, 6);
+    V.wide = envelope(V.wide, V.env * clamp01(hi / tot * 3.2), dt, 20, 7);
+    V.tip = envelope(V.tip, V.env * clamp01(hi / tot * 2.2), dt, 20, 6);
+    V.active = V.env > 0.02;
+    return V;
+  }
+  function visemeActions(V, amt) {
+    const a = amt === undefined ? 1 : amt;
+    if (!V.active) return null;
+    return {
+      j: V.open * 0.62 * a,
+      pk: V.round * 0.7 * a,
+      sL: 0.08 + V.wide * 0.5 * a, sR: 0.08 + V.wide * 0.5 * a,
+      st: V.tip * 0.75 * a,
+      bu: V.env * 0.08, ck: V.env * 0.3
+    };
+  }
+
+  /* ===================================================================
+     9. Signal extraction from blendshapes + geometry (photo & webcam)
+     =================================================================== */
+  function blendGetter(bs) {
+    const map = {};
+    if (bs) for (const c of bs) map[c.categoryName] = c.score;
+    return n => map[n] || 0;
+  }
+  function eyeOpeningRatio(P, which) {
+    const d = LIDS[which];
+    const up = d.up.reduce((a, i) => a + P[i].y, 0) / d.up.length;
+    const lo = d.lo.reduce((a, i) => a + P[i].y, 0) / d.lo.length;
+    const ew = Math.hypot(P[d.oc].x - P[d.ic].x, P[d.oc].y - P[d.ic].y) || 1;
+    return (lo - up) / ew;
+  }
+  function irisOffset(P, which, S) {
+    const I = IRIS[which], d = LIDS[which];
+    const c = S ? S[I.c] : P[I.c];
+    const ic = S ? S[d.ic] : P[d.ic], oc = S ? S[d.oc] : P[d.oc];
+    const upP = d.up.map(i => (S ? S[i] : P[i])), loP = d.lo.map(i => (S ? S[i] : P[i]));
+    const ex = oc.x - ic.x, ey = oc.y - ic.y, ew = Math.hypot(ex, ey) || 1;
+    const ax = ex / ew, ay = ey / ew;
+    const dx = c.x - (ic.x + oc.x) / 2;
+    const dy = c.y - (upP[2].y + loP[2].y) / 2;
+    return [(dx * ax + dy * ay) / ew, (-dx * ay + dy * ax) / ew];
+  }
+
+  const eulerYaw = q => eulerFromQuat(q).yaw;
+  const eulerYPR = q => eulerFromQuat(q);
+
+  root.FMEngine = {
+    eulerYaw, eulerYPR,
+    /* tables + accessors */
+    lx, ly, lz,
+    OVAL, CONTOUR, LEYE, REYE, LBROW, RBROW, LIPS_O, LIPS_I, NOSE, UP_LIP, LO_LIP, LIDS, IRIS, EYE_RING,
+    RIGID, RIGID_W, EXPR_GAIN, EXPR_CAP, ACTIONS,
+    /* geometry */
+    buildCanonical, buildMesh, faceCenterOf, localUV, tmjAxis, jawWeight, applyJaw,
+    /* expression */
+    zeroActions, PRESETS, talkAt, expressionDelta, mouthState, makeTransfer, retargetResidual, residualEnergy,
+    /* tracking */
+    createTracker, trackerPush, trackerSetNeutral, trackerUpdate, trackerIdle,
+    /* audio */
+    createViseme, visemeUpdate, visemeActions,
+    /* signals */
+    blendGetter, eyeOpeningRatio, irisOffset
+  };
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+
+<script data-src="src/puppet/render.js">
+/* =====================================================================
+   FaceMirror · puppet renderer
+   The still photo becomes a closed 3D shell (face + three hair rings +
+   a pinned frame).  Every frame the shell is rotated about the head
+   centre, weak-perspective projected and painted far -> near as
+   per-triangle affines.
+
+   Anti-artifact design goals (not a guarantee of photorealistic turns)
+     · stable far-to-near depth-key sorting and back-face handling reduce
+       paint-order smearing
+     · culled / far-side triangles re-sample a mirrored source patch; this
+       mitigates silhouette collapse but cannot reconstruct unseen details
+     · every clip goes through FM.polyOK and every wide fill is clipped
+       to a computed bounding box -> a degenerate clip can never flash
+       the whole canvas
+     · no getImageData in the frame loop; blur filters are local to small feature passes
+     · the shell is composed on an offscreen layer that is blitted once,
+       so a frame is never shown half-finished
+     · every feature pass runs every frame, gated by smooth envelopes
+   ===================================================================== */
+(function (root) {
+  'use strict';
+  const FM = root.FM, E = root.FMEngine;
+  const { clamp, clamp01, lerp, envelope, polyOK, bounds, m3, v3, matFromQuat } = FM;
+
+  function makeCanvas(w, h) {
+    const c = root.document.createElement('canvas');
+    c.width = Math.max(1, Math.round(w));
+    c.height = Math.max(1, Math.round(h));
+    return c;
+  }
+
+  /* --------------------------------------------------------- textures */
+  function enamelTexture() {
+    const c = makeCanvas(128, 160), g = c.getContext('2d');
+    const grd = g.createLinearGradient(0, 0, 0, 160);
+    [[0, '#cdbd97'], [.2, '#e9e0c8'], [.55, '#f7f2e6'], [.85, '#f1f2ee'], [1, '#cfd7dc']].forEach(s => grd.addColorStop(s[0], s[1]));
+    g.fillStyle = grd; g.fillRect(0, 0, 128, 160);
+    let seed = 7;
+    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    for (let i = 0; i < 46; i++) {
+      const x = rnd() * 128, y = rnd() * 160, r = 18 + rnd() * 34;
+      const rg = g.createRadialGradient(x, y, 0, x, y, r);
+      rg.addColorStop(0, rnd() < .5 ? 'rgba(255,252,240,.18)' : 'rgba(190,160,100,.13)');
+      rg.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = rg; g.fillRect(0, 0, 128, 160);
+    }
+    for (let i = 0; i < 90; i++) {
+      g.fillStyle = rnd() < .5 ? 'rgba(255,255,255,.07)' : 'rgba(120,95,60,.06)';
+      g.fillRect(rnd() * 128, rnd() * 40, 1 + rnd() * 2, 60 + rnd() * 100);
+    }
+    return c;
+  }
+  function noiseTexture(size) {
+    const c = makeCanvas(size, size), g = c.getContext('2d');
+    const d = g.createImageData(size, size);
+    let s = 99;
+    for (let i = 0; i < d.data.length; i += 4) {
+      s = (s * 1103515245 + 12345) & 0x7fffffff;
+      const v = 128 + ((s >> 16) & 63) - 32;
+      d.data[i] = d.data[i + 1] = d.data[i + 2] = v;
+      d.data[i + 3] = 255;
+    }
+    g.putImageData(d, 0, 0);
+    return c;
+  }
+
+  /* ---------------------------------------------------------- session */
+  function createSession() {
+    return {
+      head: null, mesh: null, src: null, canvas: null, layer: null, lctx: null,
+      W: 0, H: 0, ready: false,
+      S2: null, DST: null, BASE: null, depth: null, normals: null, normalsFace: null,
+      passes: null, proj: null, arches: null,
+      cache: { enamel: enamelTexture(), noise: noiseTexture(96), iris: [null, null], sclera: ['235,230,225', '235,230,225'], plate: null, lum: 0.7, warm: 0.5 },
+      hair: { x: 0, y: 0, vx: 0, vy: 0 },
+      lidSkin: [null, null], jaw: 0, openEnv: 0,
+      frames: 0, stats: { tris: 0, culled: 0 }, lastDebug: null
+    };
+  }
+
+  const readAt = (S, x, y, n) => {
+    const g = S.src.getContext('2d');
+    const x0 = clamp(Math.round(x) - (n >> 1), 0, Math.max(0, S.W - n));
+    const y0 = clamp(Math.round(y) - (n >> 1), 0, Math.max(0, S.H - n));
+    try {
+      const d = g.getImageData(x0, y0, n, n).data;
+      let r = 0, gg = 0, b = 0, c = 0;
+      for (let i = 0; i < d.length; i += 4) { r += d[i]; gg += d[i + 1]; b += d[i + 2]; c++; }
+      return [r / c, gg / c, b / c];
+    } catch (e) { return [120, 90, 70]; }
+  };
+
+  function prepIris(S) {
+    const { head } = S;
+    let lum = 0, warm = 0, n = 0;
+    for (const i of [205, 425, 50, 280, 36, 266, 116, 345, 129, 358]) {
+      const p = head.P[i], c = readAt(S, p[0], p[1], 5);
+      lum += (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) / 255;
+      warm += (c[0] - c[2]) / 255;
+      n++;
+    }
+    S.cache.lum = n ? clamp(lum / n, 0.1, 1) : 0.7;
+    S.cache.warm = n ? clamp(warm / n * 2 + 0.5, 0, 1) : 0.5;
+    for (let e = 0; e < 2; e++) {
+      const which = e ? 'R' : 'L';
+      const I = E.IRIS[which], ring = I.ring, c = head.P[I.c];
+      let rs = 0;
+      for (const k of ring) rs += Math.hypot(head.P[k][0] - c[0], head.P[k][1] - c[1]);
+      rs = Math.max(2.5, rs / ring.length);
+      const R = Math.ceil(rs * 1.35);
+      const s1 = readAt(S, c[0] + (head.P[E.LIDS[which].ic][0] - c[0]) * .6, c[1] + (head.P[E.LIDS[which].ic][1] - c[1]) * .6, 5);
+      const s2 = readAt(S, c[0] + (head.P[E.LIDS[which].oc][0] - c[0]) * .6, c[1] + (head.P[E.LIDS[which].oc][1] - c[1]) * .6, 5);
+      const brighter = (s1[0] + s1[1] + s1[2] > s2[0] + s2[1] + s2[2]) ? s1 : s2;
+      S.cache.sclera[e] = brighter.map(v => Math.round(clamp(v * 1.04 * (0.6 + S.cache.lum * 0.6), 0, 255))).join(',');
+      const patch = makeCanvas(R * 2, R * 2), g = patch.getContext('2d');
+      const ir = [0, 1, 2].reduce((acc, k) => {
+        const q = readAt(S, c[0] + (k === 0 ? -rs * .6 : k === 1 ? rs * .6 : 0), c[1] + (k === 2 ? rs * .6 : 0), 5);
+        return [acc[0] + q[0] / 3, acc[1] + q[1] / 3, acc[2] + q[2] / 3];
+      }, [0, 0, 0]);
+      const gr = g.createRadialGradient(R, R, 0, R, R, rs);
+      gr.addColorStop(0, 'rgb(14,10,8)'); gr.addColorStop(.3, 'rgb(14,10,8)');
+      gr.addColorStop(.42, `rgb(${ir.map(Math.round)})`);
+      gr.addColorStop(1, `rgb(${ir.map(v => Math.round(v * .6))})`);
+      g.fillStyle = gr; g.beginPath(); g.arc(R, R, rs, 0, 7); g.fill();
+      g.save();
+      g.beginPath();
+      E.EYE_RING[which].forEach((i, k) => {
+        const p = head.P[i], x = p[0] - c[0] + R, y = p[1] - c[1] + R;
+        k ? g.lineTo(x, y) : g.moveTo(x, y);
+      });
+      g.closePath(); g.clip();
+      try { g.drawImage(S.src, c[0] - R, c[1] - R, R * 2, R * 2, 0, 0, R * 2, R * 2); } catch (e) {}
+      g.restore();
+      g.globalCompositeOperation = 'destination-in';
+      const m = g.createRadialGradient(R, R, rs * .9, R, R, rs * 1.24);
+      m.addColorStop(0, 'rgba(0,0,0,1)'); m.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = m; g.fillRect(0, 0, R * 2, R * 2);
+      S.cache.iris[e] = { cv: patch, R, r: rs };
+    }
+  }
+
+  /* plate: the photo with the silhouette band radially edge-extended, so
+     pixels revealed by a turn continue hair / skin instead of showing a
+     stale frontal cheek.  Built once per image.                       */
+  function buildPlate(S) {
+    const { W, H, head } = S;
+    const plate = makeCanvas(W, H), g = plate.getContext('2d');
+    g.drawImage(S.src, 0, 0);
+    const cx = head.ctr[0], cy = head.ctr[1];
+    const R = Math.max(head.fw, head.fh) * 0.56;
+    const N = 56;
+    g.save();
+    g.filter = 'blur(3px)';
+    for (let i = 0; i < N; i++) {
+      const a = (i / N) * Math.PI * 2;
+      const dx = Math.cos(a), dy = Math.sin(a);
+      for (const k of [0.99, 1.09, 1.19, 1.29]) {
+        const inx = cx + dx * R * k, iny = cy + dy * R * k;
+        const sz = 22;
+        const x0 = clamp(inx - dx * 8 - sz / 2, 0, W - sz), y0 = clamp(iny - dy * 8 - sz / 2, 0, H - sz);
+        g.globalAlpha = 0.34;
+        try { g.drawImage(S.src, x0, y0, sz, sz, x0 + dx * 9, y0 + dy * 9, sz, sz); } catch (e) {}
+      }
+    }
+    g.restore();
+    S.cache.plate = plate;
+    const bw = Math.max(8, Math.round(W / 8)), bh = Math.max(8, Math.round(H / 8));
+    const bl = makeCanvas(bw, bh);
+    bl.getContext('2d').drawImage(S.src, 0, 0, bw, bh);
+    S.cache.blurSmall = bl;
+  }
+
+  /* ------------------------------------------------------ sessionInit */
+  function sessionInit(S, spec) {
+    S.src = spec.source;
+    S.canvas = spec.canvas;
+    S.head = spec.head;
+    S.mesh = spec.mesh;
+    S.W = S.src.width; S.H = S.src.height;
+    if (S.canvas.width !== S.W || S.canvas.height !== S.H) { S.canvas.width = S.W; S.canvas.height = S.H; }
+    S.layer = makeCanvas(S.W, S.H);
+    S.lctx = S.layer.getContext('2d');
+    const n = spec.mesh.n;
+    S.S2 = new Float32Array(n * 2);
+    S.DST = new Float32Array(n * 2);
+    S.BASE = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const p = spec.mesh.P[i];
+      S.S2[i * 2] = p[0]; S.S2[i * 2 + 1] = p[1];
+      S.BASE[i * 3] = p[0]; S.BASE[i * 3 + 1] = p[1]; S.BASE[i * 3 + 2] = p[2];
+    }
+    S.depth = new Float32Array(n);
+    const mkNormals = (list) => {
+      const out = new Float32Array(list.length);
+      for (let t = 0; t < list.length; t += 3) {
+        const a = list[t], b = list[t + 1], c = list[t + 2];
+        const pa = spec.mesh.P[a], pb = spec.mesh.P[b], pc = spec.mesh.P[c];
+        let nr = v3.cross(v3.sub(pb, pa), v3.sub(pc, pa));
+        const l = v3.len(nr) || 1;
+        nr = [nr[0] / l, nr[1] / l, nr[2] / l];
+        const area2 = (pb[0] - pa[0]) * (pc[1] - pa[1]) - (pb[1] - pa[1]) * (pc[0] - pa[0]);
+        if (area2 < 0) nr = [-nr[0], -nr[1], -nr[2]];
+        out[t] = nr[0]; out[t + 1] = nr[1]; out[t + 2] = nr[2];
+      }
+      return out;
+    };
+    S.normals = mkNormals(spec.mesh.base);
+    S.normalsFace = mkNormals(spec.mesh.face);
+    const mkPass = (list, normals, o) => ({
+      list, normals, n: list.length / 3,
+      order: new Int32Array(list.length / 3),
+      dkey: new Float32Array(list.length / 3),
+      tmp: new Int32Array(list.length / 3),
+      mergeFallbacks: 0, initialized: false,
+      pad: o.pad, cull: o.cull, mirror: o.mirror !== false
+    });
+    S.triA = mkPass(spec.mesh.base, S.normals, { pad: 0.9, cull: -0.02, mirror: true });
+    S.triB = mkPass(spec.mesh.face, S.normalsFace, { pad: 0.95, cull: -0.05, mirror: true });
+    S.mid = spec.head.mid.slice();
+    S.axis = E.tmjAxis(spec.head);
+    S.arches = buildArches();
+    prepIris(S);
+    buildPlate(S);
+    S.ready = true;
+    return S;
+  }
+  /* ------------------------------------------------------------ deform */
+  function deform(S, st) {
+    const { head, mesh } = S;
+    const n = mesh.n;
+    const delta = st.deltaCanonical;
+    const jawGain = clamp01(st.jawMeshGain === undefined ? 1 : st.jawMeshGain);
+    const C = new Array(478);
+    for (let i = 0; i < 478; i++) {
+      const p = head.P[i];
+      C[i] = [p[0], p[1], p[2]];
+      if (delta) { C[i][0] += delta[i * 3]; C[i][1] += delta[i * 3 + 1]; C[i][2] += delta[i * 3 + 2]; }
+    }
+    const gapNow = Math.hypot(C[13][0] - C[14][0], C[13][1] - C[14][1]);
+    const expressionOpen = clamp01(st.jawOpen || 0);
+    const want = clamp01(Math.max(gapNow / (head.fh * 0.17), expressionOpen)) * 0.36;
+    S.jaw = FM.slew(S.jaw, want, st.dt || 1 / 60, 3.2, 3.6);
+    if (jawGain > 0.01) E.applyJaw(head, C, S.jaw * jawGain, S.axis);
+    /* hair spring: chases the head, lags, capped */
+    const H = S.hair;
+    const yaw = E.eulerYaw(st.q);
+    const tgtX = -(st.ox || 0) - head.fw * 0.75 * Math.sin(yaw);
+    const tgtY = -(st.oy || 0) - head.fh * 0.05 * head.P[10][2] / Math.max(1, head.fw) + Math.sin(st.t * 1.3) * head.fh * 0.004;
+    H.vx = (H.vx + (tgtX - H.x) * 0.10) * 0.87;
+    H.vy = (H.vy + (tgtY - H.y) * 0.10) * 0.87;
+    H.x += H.vx; H.y += H.vy;
+    const hg = st.hairGain === undefined ? 0.6 : st.hairGain;
+    const hm = Math.hypot(H.x, H.y), cap = head.fh * 0.16;
+    const hlx = (hm > cap ? H.x * cap / hm : H.x) * hg;
+    const hly = (hm > cap ? H.y * cap / hm : H.y) * hg;
+    /* rotation + weak perspective about the head centre */
+    const q = st.q, R = matFromQuat(q);
+    const f = st.focal * head.fw;
+    const cx = head.ctr[0], cy = head.ctr[1];
+    const ox = st.ox || 0, oy = st.oy || 0, sc = st.scale || 1;
+    const zc = st.depthGain || 0;
+    const pivotZ = (head.P[10][2] + head.P[152][2]) * 0.5 * zc;
+    const proj = (p) => {
+      const rx = p[0] - cx, ry = p[1] - cy, rz = p[2] - pivotZ;
+      const mx = R[0] * rx + R[1] * ry + R[2] * rz;
+      const my = R[3] * rx + R[4] * ry + R[5] * rz;
+      const mz = R[6] * rx + R[7] * ry + R[8] * rz;
+      let d = f - mz * sc;
+      if (Math.abs(d) < f * 0.25) d = d < 0 ? -f * 0.25 : f * 0.25;
+      const k = f / d;
+      return [cx + mx * sc * k + ox, cy + my * sc * k + oy, mz];
+    };
+    S.proj = proj;
+    const body = st.bodyAt || null;
+    for (let i = 0; i < n; i++) {
+      const w = mesh.w[i], sx = S.S2[i * 2], sy = S.S2[i * 2 + 1];
+      if (w <= 0) {
+        let dx = 0, dy = 0;
+        if (body && mesh.kind[i] === 2) { const b = body(sx, sy); if (b) { dx = b[0]; dy = b[1]; } }
+        S.DST[i * 2] = sx + dx; S.DST[i * 2 + 1] = sy + dy; S.depth[i] = S.BASE[i * 3 + 2];
+        continue;
+      }
+      const isFace = i < 478;
+      const cur = isFace ? C[i] : [S.BASE[i * 3], S.BASE[i * 3 + 1], S.BASE[i * 3 + 2]];
+      const p1 = isFace ? proj([cur[0], cur[1], cur[2] * (1 + zc)]) : proj(cur);
+      const p0 = isFace ? proj([head.P[i][0], head.P[i][1], head.P[i][2] * (1 + zc)])
+                        : proj([S.BASE[i * 3], S.BASE[i * 3 + 1], S.BASE[i * 3 + 2]]);
+      let dx = (p1[0] - p0[0]) * w, dy = (p1[1] - p0[1]) * w;
+      if (mesh.kind[i] === 1 && hg > 0) {
+        const info = mesh.ringOf[i];
+        const hw = info ? [0.5, 0.85, 0.4][info.ring] : 0;
+        const top = clamp01((head.ctr[1] - sy) / head.fh + 0.75);
+        dx += hlx * hw * top; dy += hly * hw * top;
+      }
+      S.DST[i * 2] = sx + dx;
+      S.DST[i * 2 + 1] = sy + dy;
+      S.depth[i] = p1[2] * w + S.BASE[i * 3 + 2] * (1 - w) * 0.4;
+    }
+    if (st.limits !== false) {
+      limits(head, C, (out) => {
+        for (let i = 0; i < 478; i++) {
+          const w = mesh.w[i];
+          if (w <= 0) continue;
+          const d = out[i];
+          const p1 = proj([d[0], d[1], d[2] * (1 + zc)]);
+          const p0 = proj([C[i][0], C[i][1], C[i][2] * (1 + zc)]);
+          S.DST[i * 2] += (p1[0] - p0[0]) * w;
+          S.DST[i * 2 + 1] += (p1[1] - p0[1]) * w;
+        }
+      });
+    }
+    return C;
+  }
+  /* lip / lid collision: smooth projection, never a hard snap */
+  function limits(head, C, apply) {
+    const groups = [
+      [E.LIDS.L.up, E.LIDS.L.lo], [E.LIDS.R.up, E.LIDS.R.lo],
+      [E.UP_LIP, E.LO_LIP]
+    ];
+    const out = C.map(p => p.slice());
+    let touched = false;
+    for (const [ups, los] of groups) {
+      for (let k = 0; k < Math.min(ups.length, los.length); k++) {
+        const u = out[ups[k]], l = out[los[k]];
+        const pen = (u[1] + 0.4) - l[1];
+        if (pen > 0) {
+          const corr = Math.min(pen * 0.85, head.fh * 0.06);
+          out[ups[k]] = [u[0], u[1] - corr, u[2]];
+          out[los[k]] = [l[0], l[1] + corr * 0.9, l[2]];
+          touched = true;
+        }
+      }
+    }
+    if (touched) apply(out);
+  }
+
+  /* ----------------------------------------------------- triangle pass */
+  function drawShell(S, ctx, st, pass, opts) {
+    const o = opts || {};
+    const DST = S.DST, S2 = S.S2, W = S.W, H = S.H;
+    const p = S.proj;
+    /* Depth key + temporally coherent ordering.  Start from last frame's
+       order (insertion sort is O(m) when the pose barely moved), but if the
+       budget blows up during a fast turn, fall back to a stable merge sort.
+       Bucket order alone is insufficient: a small within-bucket inversion
+       is still enough to smear two overlapping face triangles.             */
+    const list = pass.list, m = pass.n, dk = pass.dkey, order = pass.order;
+    if (o.resetOrder || !pass.initialized) {
+      for (let i = 0; i < m; i++) order[i] = i;
+      pass.initialized = true;
+    }
+    const tmp = pass.tmp;
+    tmp.set(order.subarray(0, m)); // backup: insertion sort can stop mid-shift
+    for (let t = 0; t < m; t++) {
+      const i = t * 3;
+      const a = list[i], b = list[i + 1], c = list[i + 2];
+      dk[t] = (S.depth[a] + S.depth[b] + S.depth[c]) / 3;
+    }
+    {
+      let work = 0, exact = true;
+      const budget = m * 8;
+      for (let i = 1; i < m; i++) {
+        const v = order[i];
+        let j = i - 1;
+        while (j >= 0 && dk[order[j]] > dk[v]) {
+          order[j + 1] = order[j]; j--;
+          if (++work > budget) { exact = false; break; }
+        }
+        if (!exact) break;
+        order[j + 1] = v;
+      }
+      if (!exact) {
+        pass.mergeFallbacks++;
+        /* Stable bottom-up merge sort: exact mean-depth-key order, O(m log m),
+           allocation-free via the pass-owned scratch array. Restore the
+           pre-sort order first: ties then keep their frame-to-frame order. */
+        order.set(tmp.subarray(0, m)); // recover the intact list after a partial insertion sort
+        for (let width = 1; width < m; width <<= 1) {
+          for (let left = 0; left < m; left += width << 1) {
+            const mid = Math.min(left + width, m), right = Math.min(left + (width << 1), m);
+            let i = left, j = mid, k = left;
+            while (i < mid && j < right) tmp[k++] = dk[order[i]] <= dk[order[j]] ? order[i++] : order[j++];
+            while (i < mid) tmp[k++] = order[i++];
+            while (j < right) tmp[k++] = order[j++];
+          }
+          order.set(tmp.subarray(0, m));
+        }
+      }
+    }
+    const R = matFromQuat(st.q);
+    const midX = S.mid[0];
+    const pad = pass.pad * (o.padScale || 1);
+    let drawn = 0, culled = 0;
+    for (let t = 0; t < m; t++) {
+      const tri = order[t] * 3;
+      const a = list[tri], b = list[tri + 1], c = list[tri + 2];
+      const nz = R[6] * pass.normals[tri] + R[7] * pass.normals[tri + 1] + R[8] * pass.normals[tri + 2];
+      const behind = nz < pass.cull;
+      const ax = DST[a * 2], ay = DST[a * 2 + 1];
+      const bx = DST[b * 2], by = DST[b * 2 + 1];
+      const cx = DST[c * 2], cy = DST[c * 2 + 1];
+      const area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+      if (!isFinite(area) || Math.abs(area) < 0.10) continue;
+      const minX = Math.min(ax, bx, cx), maxX = Math.max(ax, bx, cx);
+      const minY = Math.min(ay, by, cy), maxY = Math.max(ay, by, cy);
+      if (maxX < -3 || maxY < -3 || minX > W + 3 || minY > H + 3) continue;
+      let s0x = S2[a * 2], s0y = S2[a * 2 + 1];
+      let s1x = S2[b * 2], s1y = S2[b * 2 + 1];
+      let s2x = S2[c * 2], s2y = S2[c * 2 + 1];
+      if (behind && pass.mirror) {
+        /* Mirrored source approximation; swap the sample winding so the
+           affine remains non-degenerate. This is not learned inpainting. */
+        s0x = 2 * midX - s0x;
+        const tmpX = 2 * midX - s1x, tmpY = s1y;
+        s1x = 2 * midX - s2x; s1y = s2y;
+        s2x = tmpX; s2y = tmpY;
+      }
+      const det = (s1x - s0x) * (s2y - s0y) - (s1y - s0y) * (s2x - s0x);
+      if (!isFinite(det) || Math.abs(det) < 1e-6) continue;
+      const k = 1 / det;
+      const ma = ((bx - ax) * (s2y - s0y) - (by - ay) * (s2x - s0x)) * k;
+      const mb = ((by - ay) * (s1x - s0x) - (bx - ax) * (s1y - s0y)) * k;
+      const mc = ((cx - ax) * (s2y - s0y) - (cy - ay) * (s2x - s0x)) * k;
+      const md = ((cy - ay) * (s1x - s0x) - (cx - ax) * (s1y - s0y)) * k;
+      const me = ax - ma * s0x - mc * s0y;
+      const mf = ay - mb * s0x - md * s0y;
+      const gx = (ax + bx + cx) / 3, gy = (ay + by + cy) / 3;
+      ctx.save();
+      ctx.beginPath();
+      const V = [[ax, ay], [bx, by], [cx, cy]];
+      for (let i = 0; i < 3; i++) {
+        const vx = V[i][0] - gx, vy = V[i][1] - gy, l = Math.hypot(vx, vy) || 1;
+        const X = V[i][0] + vx / l * pad, Y = V[i][1] + vy / l * pad;
+        i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y);
+      }
+      ctx.closePath();
+      ctx.clip();
+      ctx.setTransform(ma, mb, mc, md, me, mf);
+      const x0 = clamp(Math.floor(Math.min(s0x, s1x, s2x)) - 1, 0, W);
+      const y0 = clamp(Math.floor(Math.min(s0y, s1y, s2y)) - 1, 0, H);
+      const x1 = clamp(Math.ceil(Math.max(s0x, s1x, s2x)) + 1, 0, W);
+      const y1 = clamp(Math.ceil(Math.max(s0y, s1y, s2y)) + 1, 0, H);
+      const sw = x1 - x0, sh = y1 - y0;
+      if (sw > 0 && sh > 0) {
+        try { ctx.drawImage(behind ? S.cache.plate : S.src, x0, y0, sw, sh, x0, y0, sw, sh); } catch (e) {}
+      }
+      ctx.restore();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      drawn++; if (behind) culled++;
+    }
+    S.stats.tris += drawn; S.stats.culled = (S.stats.culled || 0) + culled;
+    return drawn;
+  }
+
+  /* ------------------------------------------------------- accessories */
+  function drawEyelid(S, ctx, which, c, D) {
+    if (c < 0.015) return;
+    const d = E.LIDS[which];
+    const p = D[d.ic], q = D[d.oc];
+    const upP = d.up.map(i => D[i]), loP = d.lo.map(i => D[i]);
+    const ew = Math.hypot(p.x - q.x, p.y - q.y) || 1;
+    const top = Math.min(...upP.map(v => v.y)), bot = Math.max(...loP.map(v => v.y));
+    const eh = Math.max(bot - top, ew * 0.13);
+    const u = upP[2], l = loP[2];
+    const mx = (p.x + q.x) / 2, my = (p.y + q.y) / 2;
+    const m = { x: u.x + (l.x - u.x) * c, y: u.y + (l.y - u.y) * c };
+    const k = { x: m.x * 2 - mx, y: m.y * 2 - my };
+    const ty = top - eh * 0.5, m0 = ew * 0.07;
+    const x0 = Math.floor(Math.min(p.x, q.x) - m0 - 8), y0 = Math.floor(ty - 8);
+    const W = Math.ceil(ew + m0 * 2 + 16), Hh = Math.ceil(bot - ty + 16);
+    const sy = top - eh * 0.95;
+    if (W < 6 || Hh < 6 || x0 < 0 || y0 < 0 || x0 + W > S.W || y0 + Hh > S.H || sy < 0) return;
+    const slot = which === 'L' ? 0 : 1;
+    let fc = S.lidSkin[slot];
+    if (!fc || fc.width < W || fc.height < Hh) {
+      fc = makeCanvas(Math.max(W, S.W), Math.max(Hh, S.H));
+      S.lidSkin[slot] = fc;
+    }
+    const fx = fc.getContext('2d');
+    fx.setTransform(1, 0, 0, 1, 0, 0);
+    fx.clearRect(0, 0, fc.width, fc.height);
+    fx.save();
+    fx.translate(-x0, -y0);
+    fx.filter = 'blur(1.2px)';
+    fx.beginPath();
+    fx.moveTo(p.x, p.y);
+    fx.quadraticCurveTo(k.x, k.y, q.x, q.y);
+    fx.lineTo(q.x + (q.x > p.x ? m0 : -m0), ty);
+    fx.lineTo(p.x + (q.x > p.x ? -m0 : m0), ty);
+    fx.closePath();
+    fx.fill();
+    fx.filter = 'none';
+    fx.globalCompositeOperation = 'source-in';
+    const skin = S.layer;
+    try { fx.drawImage(skin, x0, sy, W, eh * 0.85, x0, ty, W, Math.max(2, bot - ty + 6)); } catch (e) {}
+    fx.globalCompositeOperation = 'source-over';
+    fx.restore();
+    ctx.save();
+    ctx.globalAlpha = clamp01(c * 3);
+    try { ctx.drawImage(fc, 0, 0, W, Hh, x0, y0, W, Hh); } catch (e) {}
+    ctx.restore();
+    ctx.save();
+    const edge = () => {
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.quadraticCurveTo(k.x, k.y, q.x, q.y);
+    };
+    ctx.lineCap = 'round';
+    ctx.filter = 'blur(1.6px)';
+    ctx.strokeStyle = 'rgba(58,30,26,.30)';
+    ctx.lineWidth = Math.max(1.2, ew * 0.085);
+    edge(); ctx.stroke();
+    ctx.filter = 'none';
+    ctx.strokeStyle = 'rgba(43,26,22,.85)';
+    ctx.lineWidth = Math.max(1.1, ew * 0.032);
+    edge(); ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawIris(S, ctx, e, D, gaze, gain) {
+    const I = S.cache.iris[e];
+    if (!I) return;
+    const which = e ? 'R' : 'L';
+    const d = E.LIDS[which], ring = E.IRIS[which].ring;
+    const pc = D[E.IRIS[which].c];
+    const ex = D[d.oc].x - D[d.ic].x, ey = D[d.oc].y - D[d.ic].y;
+    const ew = Math.hypot(ex, ey) || 1;
+    let r = 0;
+    for (const k of ring) r += Math.hypot(D[k].x - pc.x, D[k].y - pc.y);
+    r = (r / ring.length) || I.r;
+    const ax = ex / ew, ay = ey / ew;
+    const off = [(gaze[0] * ax - gaze[1] * ay) * ew * gain, (gaze[0] * ay + gaze[1] * ax) * ew * gain];
+    const X = pc.x + off[0], Y = pc.y + off[1];
+    const RR = Math.max(1.2, I.R * (r / I.r));
+    const poly = E.EYE_RING[which].map(i => D[i]);
+    if (!polyOK(poly, 3)) return;
+    const bb = bounds(poly);
+    ctx.save();
+    ctx.beginPath();
+    poly.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+    ctx.closePath();
+    ctx.clip();
+    const a = clamp01(Math.hypot(off[0], off[1]) / (ew * 0.02));
+    if (a > 0.01) {
+      const grd = ctx.createRadialGradient(pc.x, pc.y, Math.max(1, r * 0.25), pc.x, pc.y, Math.max(2, r * 1.5));
+      grd.addColorStop(0, `rgba(${S.cache.sclera[e]},${a})`);
+      grd.addColorStop(1, `rgba(${S.cache.sclera[e]},0)`);
+      ctx.fillStyle = grd;
+      ctx.fillRect(bb.x0 - 2, bb.y0 - 2, bb.w + 4, bb.h + 4);
+    }
+    try { ctx.drawImage(I.cv, X - RR, Y - RR, RR * 2, RR * 2); } catch (err) {}
+    const lg = ctx.createRadialGradient(X, Y, Math.max(1, r * 0.8), X, Y, Math.max(1.2, r * 1.08));
+    lg.addColorStop(0, 'rgba(15,10,8,0)'); lg.addColorStop(1, 'rgba(15,10,8,.34)');
+    ctx.fillStyle = lg;
+    ctx.beginPath(); ctx.arc(X, Y, r * 1.1, 0, 7); ctx.fill();
+    const sg = ctx.createLinearGradient(0, bb.y0, 0, bb.y0 + bb.h * 0.55);
+    sg.addColorStop(0, 'rgba(28,14,10,.36)'); sg.addColorStop(1, 'rgba(28,14,10,0)');
+    ctx.fillStyle = sg;
+    ctx.fillRect(bb.x0, bb.y0, bb.w, bb.h * 0.6);
+    ctx.restore();
+  }
+
+  function drawLips(S, ctx, D, mw, gap) {
+    const O = E.LIPS_O.map(i => D[i]), In = E.LIPS_I.map(i => D[i]);
+    const a = D[61], b = D[291];
+    if (!polyOK(O, 12) || !polyOK(In, 2.5)) return false;
+    const ang = Math.atan2(b.y - a.y, b.x - a.x);
+    const dn = { x: -Math.sin(ang), y: Math.cos(ang) };
+    const bb = bounds(O);
+    const seam = clamp01(1 - gap / (mw * 0.075));
+    const lc = { x: (D[17].x + D[14].x) / 2, y: (D[17].y + D[14].y) / 2 };
+    const uc = { x: (D[0].x + D[13].x) / 2, y: (D[0].y + D[13].y) / 2 };
+    ctx.save();
+    ctx.beginPath();
+    O.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+    ctx.closePath();
+    In.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+    ctx.closePath();
+    ctx.clip('evenodd');
+    ctx.fillStyle = 'rgba(186,66,82,.13)';
+    ctx.fillRect(bb.x0 - 2, bb.y0 - 2, bb.w + 4, bb.h + 4);
+    ctx.lineWidth = 0.8;
+    for (let i = 0; i < 30; i++) {
+      const t = (i + .5) / 30, bx = a.x + (b.x - a.x) * t, by = a.y + (b.y - a.y) * t, h = mw * 0.19;
+      ctx.strokeStyle = `rgba(84,28,36,${.06 + .05 * (i % 3)})`;
+      ctx.beginPath();
+      ctx.moveTo(bx - dn.x * h, by - dn.y * h);
+      ctx.lineTo(bx + dn.x * h, by + dn.y * h);
+      ctx.stroke();
+    }
+    const gl = (c, rw, rh, al) => {
+      if (!(rw > 0.5 && rh > 0.2)) return;
+      ctx.save();
+      ctx.translate(c.x, c.y); ctx.rotate(ang); ctx.scale(1, rh / rw);
+      const g = ctx.createRadialGradient(0, 0, 0, 0, 0, rw);
+      g.addColorStop(0, `rgba(255,240,238,${al})`);
+      g.addColorStop(1, 'rgba(255,240,238,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(0, 0, rw, 0, 7); ctx.fill();
+      ctx.restore();
+    };
+    gl(lc, mw * 0.26, mw * 0.05, .36 * (1 - seam * 0.3));
+    gl(uc, mw * 0.16, mw * 0.035, .15);
+    ctx.restore();
+    if (seam > 0.02) {
+      ctx.save();
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      const path = () => {
+        ctx.beginPath();
+        E.UP_LIP.forEach((i, k) => k ? ctx.lineTo(D[i].x, D[i].y) : ctx.moveTo(D[i].x, D[i].y));
+      };
+      ctx.filter = 'blur(1.8px)';
+      ctx.strokeStyle = `rgba(52,15,22,${.28 * seam})`;
+      ctx.lineWidth = Math.max(1, mw * 0.035);
+      path(); ctx.stroke();
+      ctx.filter = 'blur(.6px)';
+      ctx.strokeStyle = `rgba(44,10,16,${.55 * seam})`;
+      ctx.lineWidth = Math.max(1, mw * 0.011);
+      path(); ctx.stroke();
+      ctx.filter = 'none';
+      const r = Math.max(1, mw * 0.07);
+      for (const P of [a, b]) {
+        const g = ctx.createRadialGradient(P.x, P.y, 0, P.x, P.y, r);
+        g.addColorStop(0, `rgba(40,8,14,${.36 * seam})`);
+        g.addColorStop(1, 'rgba(40,8,14,0)');
+        ctx.fillStyle = g;
+        ctx.fillRect(P.x - r, P.y - r, r * 2, r * 2);
+      }
+      ctx.restore();
+    }
+    return true;
+  }
+
+  /* ------------------------------------------------------- oral cavity */
+  function buildArches() {
+    return {
+      TW: [.17, .12, .115, .085, .05],       // incisal width, in mouth widths
+      TH: [.95, .82, .9, .68, .55],          // crown length, relative
+      DEPTH: [0, .18, .5, .95, 1.3]          // how far back each tooth sits
+    };
+  }
+  function mouthFrame(head, C) {
+    const a = C[61], b = C[291], up = C[13], lo = C[14];
+    const ax = v3.norm(v3.sub(b, a));
+    let ay = v3.sub(lo, up);
+    const pr = v3.dot(ay, ax);
+    ay = v3.norm([ay[0] - ax[0] * pr, ay[1] - ax[1] * pr, ay[2] - ax[2] * pr]);
+    const az = v3.norm(v3.cross(ax, ay));
+    const mw = v3.dist(a, b) || head.fw * 0.4;
+    return { ax, ay, az, org: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2], mw,
+             upY: v3.dot(up, ay), loY: v3.dot(lo, ay) };
+  }
+  const mfp = (fr, u, v, w) => [
+    fr.org[0] + fr.ax[0] * u + fr.ay[0] * v + fr.az[0] * w,
+    fr.org[1] + fr.ax[1] * u + fr.ay[1] * v + fr.az[1] * w,
+    fr.org[2] + fr.ax[2] * u + fr.ay[2] * v + fr.az[2] * w
+  ];
+  /* Draw one rigid dental arch and return visibility diagnostics. The
+     upper arch is painted after the tongue to restore front-to-back order. */
+  function drawArch(S, ctx, proj3, fr, which, openAmt, cfg) {
+    /* cfg = { vis, bright, warmth } straight from the sliders */
+    const { TW, TH, DEPTH } = S.arches;
+    const isUp = which === 'up';
+    const line = isUp ? fr.upY + openAmt * 0.16 : fr.loY - openAmt * 0.16;
+    const crown = fr.mw * (isUp ? 0.30 : 0.26);
+    const teeth = [];
+    for (let sd = 0; sd < 2; sd++) {
+      let cum = 0;
+      for (let j = 0; j < 5; j++) {
+        const w = TW[j] * (isUp ? 1 : 0.94);
+        const u0 = cum * (sd ? 1 : -1) * fr.mw, u1 = (cum + w) * (sd ? 1 : -1) * fr.mw;
+        const z = -fr.mw * 0.13 - fr.mw * 0.26 * DEPTH[j];
+        const hh = crown * TH[j] * (1 + (((j * 13 + (sd ? 5 : 0)) % 7) - 3) * 0.015);
+        const vBite = line + (isUp ? 0 : 0);
+        const vGum = line + (isUp ? -hh : hh);
+        const a3 = mfp(fr, u0, vGum, z), b3 = mfp(fr, u1, vGum, z);
+        const c3 = mfp(fr, u0, vBite, z), d3 = mfp(fr, u1, vBite, z);
+        const q = [proj3(a3), proj3(b3), proj3(c3), proj3(d3)];
+        if (!q.every(v => isFinite(v[0]) && isFinite(v[1]))) continue;
+        teeth.push({ q, j, sd, back: DEPTH[j], hh, z, gumY: vGum, biteY: vBite });
+        cum += w;
+      }
+    }
+    /* back teeth first: the arch reads as a curve */
+    teeth.sort((a, b) => b.back - a.back);
+    const vis = clamp01(cfg.vis) * clamp01(openAmt * 2.8);
+    const bright = clamp01((0.62 + S.cache.lum * 0.5) * cfg.bright);
+    let frontY = null, drawnTeeth = 0, alphaSum = 0;
+    for (const t of teeth) {
+      const [A0, B0, C0, D0] = t.q;
+      const alpha = clamp01(vis * (1 - Math.min(.5, t.back * 0.32)));
+      if (alpha <= 0.02) continue;
+      alphaSum += alpha;
+      const quad = () => {
+        ctx.beginPath();
+        ctx.moveTo(A0[0], A0[1]); ctx.lineTo(B0[0], B0[1]);
+        ctx.lineTo(D0[0], D0[1]); ctx.lineTo(C0[0], C0[1]);
+        ctx.closePath();
+      };
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.beginPath();
+      quad();
+      ctx.clip();
+      ctx.save();
+      ctx.transform((B0[0] - A0[0]) / 48, (B0[1] - A0[1]) / 48,
+                    (C0[0] - A0[0]) / 120, (C0[1] - A0[1]) / 120, A0[0], A0[1]);
+      try { ctx.drawImage(S.cache.enamel, (t.j * 29 + (t.sd ? 13 : 0)) % 80, 0, 48, 120, 0, 0, 48, 120); } catch (e) {}
+      ctx.restore();
+      ctx.save();
+      quad();
+      const side = ctx.createLinearGradient(A0[0], A0[1], B0[0], B0[1]);
+      side.addColorStop(0, 'rgba(106,82,58,.34)');
+      side.addColorStop(.28, 'rgba(106,82,58,0)');
+      side.addColorStop(.72, 'rgba(106,82,58,0)');
+      side.addColorStop(1, 'rgba(106,82,58,.34)');
+      ctx.fillStyle = side;
+      ctx.fill();
+      if (cfg.warmth > 0.01) {
+        ctx.fillStyle = `rgba(196,150,70,${cfg.warmth * 0.22})`;
+        ctx.fill();
+      }
+      const eg = ctx.createLinearGradient(C0[0], C0[1], A0[0], A0[1]);
+      eg.addColorStop(0, `rgba(255,255,255,${0.20 * bright})`);
+      eg.addColorStop(.42, 'rgba(255,255,255,0)');
+      eg.addColorStop(1, `rgba(232,226,210,${0.12 * bright})`);
+      ctx.fillStyle = eg;
+      ctx.fill();
+      /* biting edge reads translucent, like real enamel */
+      const tgd = ctx.createLinearGradient(C0[0], C0[1], (C0[0] + A0[0]) / 2, (C0[1] + A0[1]) / 2);
+      tgd.addColorStop(0, `rgba(255,252,245,${0.22 * bright})`);
+      tgd.addColorStop(1, 'rgba(255,252,245,0)');
+      ctx.fillStyle = tgd;
+      ctx.fill();
+      ctx.restore();
+      /* interproximal shade where neighbours meet */
+      ctx.strokeStyle = `rgba(52,26,22,${0.35 * clamp01(0.35 + t.back)})`;
+      ctx.lineWidth = 1.05;
+      ctx.beginPath();
+      ctx.moveTo(A0[0], A0[1]);
+      ctx.lineTo(C0[0], C0[1]);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(B0[0], B0[1]);
+      ctx.lineTo(D0[0], D0[1]);
+      ctx.stroke();
+      ctx.restore();
+      if (frontY === null || (isUp ? C0[1] > frontY : C0[1] < frontY)) frontY = C0[1];
+      drawnTeeth++;
+    }
+    return { frontY, drawnTeeth, alphaSum };
+  }
+
+  function drawCavity(S, ctx, D, h) {
+    const In = E.LIPS_I.map(i => D[i]);
+    if (!polyOK(In, 2.5)) return false;
+    const bb = bounds(In);
+    ctx.save();
+    ctx.beginPath();
+    In.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+    ctx.closePath();
+    ctx.clip();
+    const g = ctx.createLinearGradient(D[13].x, D[13].y, D[14].x, D[14].y);
+    g.addColorStop(0, `rgba(70,20,24,${0.85 * h})`);
+    g.addColorStop(.55, `rgba(28,7,10,${0.95 * h})`);
+    g.addColorStop(1, `rgba(18,4,7,${0.9 * h})`);
+    ctx.fillStyle = g;
+    ctx.fillRect(bb.x0 - 2, bb.y0 - 2, bb.w + 4, bb.h + 4);
+    const mx = (D[13].x + D[14].x) / 2, my = (D[13].y + D[14].y) / 2;
+    const mw = Math.hypot(D[61].x - D[291].x, D[61].y - D[291].y) || S.head.fw * 0.4;
+    const r = Math.max(2, mw * 0.34);
+    const rg = ctx.createRadialGradient(mx, my, 1, mx, my, r);
+    rg.addColorStop(0, `rgba(3,0,1,${0.8 * h})`);
+    rg.addColorStop(1, 'rgba(3,0,1,0)');
+    ctx.fillStyle = rg;
+    ctx.fillRect(bb.x0 - 2, bb.y0 - 2, bb.w + 4, bb.h + 4);
+    ctx.restore();
+    return true;
+  }
+
+  function drawTongue(S, ctx, fr, proj3, D, st, h) {
+    const tg = clamp01(st.tongue);
+    if (tg < 0.02) return false;
+    const In = E.LIPS_I.map(i => D[i]);
+    if (!polyOK(In, 2.5)) return false;
+    const mw = fr.mw, gap = Math.max(0, st.gap || 0);
+    const len = mw * (0.20 + 0.62 * tg) + gap * 0.30;
+    const half = mw * (0.13 + 0.09 * tg);
+    const sec = [];
+    const S5 = 5;
+    for (let s = 0; s <= S5; s++) {
+      const t = s / S5;
+      const w = half * (0.5 + 0.6 * Math.sin(Math.PI * Math.min(1, 0.18 + t * 0.82)));
+      const v = fr.loY + gap * 0.06 + t * (gap * 0.26 + mw * 0.06) * (0.6 + 0.4 * tg);
+      const z = -mw * 0.10 + t * len;
+      sec.push({ l: proj3(mfp(fr, -w, v, z)), r: proj3(mfp(fr, w, v, z)), m: proj3(mfp(fr, 0, v, z)), t, w });
+    }
+    if (!sec.every(s => isFinite(s.l[0]) && isFinite(s.r[0]) && isFinite(s.m[0]))) return false;
+    const bb = bounds(sec.flatMap(s => [s.l, s.r]));
+    if (!(bb.w > 1 && bb.h > 1)) return false;
+    ctx.save();
+    ctx.beginPath();
+    In.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+    ctx.closePath();
+    ctx.clip();
+    const path = () => {
+      ctx.beginPath();
+      ctx.moveTo(sec[0].l[0], sec[0].l[1]);
+      for (let i = 1; i < sec.length; i++) ctx.lineTo(sec[i].l[0], sec[i].l[1]);
+      for (let i = sec.length - 1; i >= 0; i--) ctx.lineTo(sec[i].r[0], sec[i].r[1]);
+      ctx.closePath();
+    };
+    const g = ctx.createLinearGradient(sec[0].m[0], sec[0].m[1], sec[sec.length - 1].m[0], sec[sec.length - 1].m[1]);
+    g.addColorStop(0, 'rgba(140,54,68,1)');
+    g.addColorStop(.5, 'rgba(200,100,112,1)');
+    g.addColorStop(1, 'rgba(222,132,140,1)');
+    ctx.globalAlpha = clamp01(0.4 + 0.6 * h);
+    path();
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.save();
+    path(); ctx.clip();
+    let s2 = 12345;
+    const rnd = () => (s2 = (s2 * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    const first = sec[0].m, last = sec[sec.length - 1].m;
+    for (let i = 0; i < 80; i++) {
+      const t = rnd(), u = rnd();
+      const x = lerp(first[0], last[0], t) + (u - .5) * half * 1.7;
+      const y = lerp(first[1], last[1], t);
+      ctx.beginPath();
+      ctx.arc(x, y, i % 3 ? 0.9 : 1.4, 0, 7);
+      ctx.fillStyle = 'rgba(255,206,212,.15)';
+      ctx.fill();
+    }
+    ctx.strokeStyle = 'rgba(120,26,42,.42)';
+    ctx.lineWidth = Math.max(1.2, half * 0.16);
+    ctx.beginPath();
+    ctx.moveTo(first[0], first[1]);
+    for (let i = 1; i < sec.length; i++) ctx.lineTo(sec[i].m[0], sec[i].m[1]);
+    ctx.stroke();
+    const tip = sec[sec.length - 1].m;
+    const sg = ctx.createRadialGradient(tip[0], tip[1], 1, tip[0], tip[1], Math.max(3, half * 1.5));
+    sg.addColorStop(0, 'rgba(255,222,226,.32)');
+    sg.addColorStop(1, 'rgba(255,222,226,0)');
+    ctx.fillStyle = sg;
+    ctx.fillRect(bb.x0 - 4, bb.y0 - 4, bb.w + 8, bb.h + 8);
+    const sh = ctx.createLinearGradient(0, bb.y0, 0, bb.y0 + bb.h * 0.5);
+    sh.addColorStop(0, 'rgba(58,12,20,.5)');
+    sh.addColorStop(1, 'rgba(58,12,20,0)');
+    ctx.fillStyle = sh;
+    ctx.fillRect(bb.x0 - 4, bb.y0 - 4, bb.w + 8, bb.h * 0.55);
+    ctx.restore();
+    ctx.globalAlpha = 1;
+    ctx.restore();
+    return true;
+  }
+
+  function drawShading(S, ctx, D, st) {
+    const yaw = E.eulerYaw(st.q);
+    const amt = clamp01(Math.abs(yaw) * 0.9 * (st.shade || 0));
+    if (amt < 0.012) return;
+    const poly = E.CONTOUR.map(i => D[i]);
+    if (!polyOK(poly, 20)) return;
+    const bb = bounds(poly);
+    ctx.save();
+    ctx.beginPath();
+    poly.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+    ctx.closePath();
+    ctx.clip();
+    const left = yaw < 0;
+    const g = ctx.createLinearGradient(left ? bb.x0 : bb.x1, 0, left ? bb.x1 : bb.x0, 0);
+    g.addColorStop(0, `rgba(22,12,14,${amt})`);
+    g.addColorStop(.45, 'rgba(22,12,14,0)');
+    g.addColorStop(1, `rgba(255,244,236,${amt * 0.32})`);
+    ctx.fillStyle = g;
+    ctx.fillRect(bb.x0 - 2, bb.y0 - 2, bb.w + 4, bb.h + 4);
+    ctx.restore();
+  }
+
+  /* ------------------------------------------------------------- frame */
+  function sessionFrame(S, st) {
+    if (!S.ready) return null;
+    S.frames++;
+    const ctx = st.ctx || S.canvas.getContext('2d');
+    const lc = S.lctx;
+    const C = deform(S, st);
+    const D = new Array(478);
+    for (let i = 0; i < 478; i++) D[i] = { x: S.DST[i * 2], y: S.DST[i * 2 + 1], z: S.depth[i] };
+    S.stats.tris = 0; S.stats.culled = 0;
+    /* ---- compose the shell on the layer, then blit once ------------ */
+    lc.setTransform(1, 0, 0, 1, 0, 0);
+    lc.clearRect(0, 0, S.W, S.H);
+    lc.drawImage(S.cache.plate || S.src, 0, 0);
+    lc.imageSmoothingQuality = st.quality > 0 ? 'high' : 'low';
+    drawShell(S, lc, st, S.triA, { resetOrder: S.frames < 3, padScale: st.quality > 1 ? 1.4 : 1 });
+    if (st.quality > 0) drawShell(S, lc, st, S.triB, { resetOrder: S.frames < 3, padScale: st.quality > 1 ? 1.4 : 1 });
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, S.W, S.H);
+    let mw = 0, gap = 0, h = S.openEnv;
+    const oral = { cavity: false, lowerTeeth: 0, lowerAlpha: 0, tongue: false, upperTeeth: 0, upperAlpha: 0, lips: false };
+    if (st.origOnly) {
+      ctx.drawImage(S.src, 0, 0);
+    } else {
+      ctx.drawImage(S.layer, 0, 0);
+      /* ---- accessories -------------------------------------------- */
+      const fr = mouthFrame(S.head, C);
+      mw = Math.hypot(S.DST[61 * 2] - S.DST[291 * 2], S.DST[61 * 2 + 1] - S.DST[291 * 2 + 1]) || S.head.fw * 0.4;
+      const rawGap = Math.hypot(S.DST[13 * 2] - S.DST[14 * 2], S.DST[13 * 2 + 1] - S.DST[14 * 2 + 1]);
+      gap = Math.max(0, rawGap - mw * 0.035);
+      S.openEnv = envelope(S.openEnv, clamp01(gap / (mw * 0.30)), st.dt || 1 / 60, 14, 9);
+      h = S.openEnv;
+      const zc = st.depthGain || 0;
+      const proj3 = (p) => S.proj([p[0], p[1], p[2] * (1 + zc)]);
+      if (h > 0.004) oral.cavity = drawCavity(S, ctx, D, h) === true;
+      const openAmt = clamp01(h * 1.1);
+      const lower = drawArch(S, ctx, proj3, fr, 'lo', openAmt, st);
+      oral.lowerTeeth = lower.drawnTeeth; oral.lowerAlpha = lower.alphaSum;
+      oral.tongue = drawTongue(S, ctx, fr, proj3, D, { tongue: st.tongue, gap: gap + mw * 0.035 }, h) === true;
+      const upper = drawArch(S, ctx, proj3, fr, 'up', openAmt, st);
+      oral.upperTeeth = upper.drawnTeeth; oral.upperAlpha = upper.alphaSum;
+      oral.lips = drawLips(S, ctx, D, mw, gap) === true;
+      drawIris(S, ctx, 0, D, st.gaze[0], st.gazeGain);
+      drawIris(S, ctx, 1, D, st.gaze[1], st.gazeGain);
+      drawEyelid(S, ctx, 'L', st.lid[0], D);
+      drawEyelid(S, ctx, 'R', st.lid[1], D);
+      drawShading(S, ctx, D, st);
+    }
+    /* ---- overlays -------------------------------------------------- */
+    if (st.showPoints && st.points) {
+      ctx.save();
+      for (let k = 0; k < st.points.length; k++) {
+        const def = st.points[k];
+        const px = st.origOnly ? S.S2[def.v * 2] : S.DST[def.v * 2];
+        const py = st.origOnly ? S.S2[def.v * 2 + 1] : S.DST[def.v * 2 + 1];
+        const hot = def.k === st.dragIndex || def.k === st.hoverIndex;
+        ctx.beginPath();
+        ctx.arc(px, py, hot ? 8 : 4.2, 0, 7);
+        ctx.fillStyle = 'rgba(0,0,0,.55)';
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(px, py, hot ? 6 : 2.8, 0, 7);
+        ctx.fillStyle = def.c;
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+    if (st.showMesh) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(94,234,212,.30)';
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      const list = S.triA.list;
+      for (let t = 0; t < list.length; t += 3) {
+        const a = list[t], b = list[t + 1], c = list[t + 2];
+        if (S.mesh.kind[a] === 2 && S.mesh.kind[b] === 2 && S.mesh.kind[c] === 2) continue;
+        ctx.moveTo(S.DST[a * 2], S.DST[a * 2 + 1]);
+        ctx.lineTo(S.DST[b * 2], S.DST[b * 2 + 1]);
+        ctx.lineTo(S.DST[c * 2], S.DST[c * 2 + 1]);
+        ctx.closePath();
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+    const dbg = { tris: S.stats.tris, culled: S.stats.culled, mouth: { mw, gap, h, ...oral }, jaw: S.jaw };
+    S.lastDebug = dbg;
+    return dbg;
+  }
+
+  root.FMRender = { createSession, sessionInit, sessionFrame, deform, buildPlate, prepIris, makeCanvas,
+                    mouthFrame, mfp, buildArches };
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+
+<script data-src="src/puppet/ui.js">
+/* =====================================================================
+   FaceMirror · puppet UI  (DOM side)
+
+   Split of duties, which is what keeps the picture calm:
+     runDetection()  fires only when the browser hands us a *new* video
+                     frame.  It touches nothing but raw signals.
+     smoothSignals() runs every animation frame and turns raw signals
+                     into envelopes with slew limits and one-euro filters.
+     composeDelta()  sums preset actions + webcam residual + sculpts into
+                     one canonical delta, then rate limits the whole thing.
+     sessionFrame()  paints.  It never reads a raw threshold.
+
+   Deliberate stability choices
+     · no allocation and no getImageData inside the frame loop
+     · every signal is filtered; every gate is a float in [0,1]
+     · "set neutral" moves the pose target only, so the slew limiter
+       turns it into a glide instead of a jump
+     · detection loss decays the pose over ~1 s, never snaps to rest
+   ===================================================================== */
+(function (root) {
+  'use strict';
+  const FM = root.FM, E = root.FMEngine, RR = root.FMRender;
+  const { clamp, clamp01, lerp, slew, envelope, ratioTracker, ratioTrack, eulerFromQuat } = FM;
+
+  const GROUPS = {
+    oval: [10, 338, 297, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 152, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 109, 67],
+    leye: [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246],
+    reye: [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398],
+    brow: [70, 63, 105, 66, 107, 300, 293, 334, 296, 336],
+    lips: [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185],
+    inner: [78, 82, 13, 312, 308, 317, 14, 87],
+    nose: [4, 168, 6, 197, 195, 5, 1, 2, 98, 327]
+  };
+  const GROUP_COLOR = { oval: '#60a5fa', leye: '#5eead4', reye: '#5eead4', brow: '#fbbf24', lips: '#f472b6', inner: '#fb7185', nose: '#a78bfa' };
+  const CAP = { oval: 0.05, leye: 0.015, reye: 0.015, brow: 0.05, lips: 0.07, inner: 0.07, nose: 0.02 };
+  const GROUP_NAME = { oval: 'Face outline', leye: 'Eye', reye: 'Eye', brow: 'Eyebrow', lips: 'Lips', inner: 'Inner mouth', nose: 'Nose' };
+
+  const $ = id => (root.document ? root.document.getElementById(id) : null);
+  const mix = (a, b, t) => a + (b - a) * t;
+  /* every signal that enters the action mixer goes through nz(): a single
+     undefined multiplier (e.g. a blendshape the detector did not report)
+     would otherwise poison the whole expression field with NaN.        */
+  const nz = v => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+
+  const A = {
+    MP: null, mesh: null, head: null, ses: null, tracker: null, vis: E.createViseme(),
+    deltaExpr: new Float32Array(478 * 3),   // canonical delta before click-to-sculpt
+    src: null, cam: null, puppetCtx: null,
+    faceImg: null, faceVid: null, poseImg: null, poseVid: null,
+    camOn: false, stream: null, audioCtx: null, analyser: null, freq: null, micOn: false, micStream: null,
+    preset: 'live', quality: 1, lastVideoTime: -1,
+    actions: E.zeroActions(), live: E.zeroActions(), target: E.zeroActions(),
+    sculpt: new Float32Array(478 * 2), bag: [], drag: -1, hover: -1, dragOff: { x: 0, y: 0 }, sculptMode: 'drag',
+    gaze: [[0, 0], [0, 0]], gazeS: [[0, 0], [0, 0]], gazeNeutral: [[0, 0], [0, 0]], sacT: 0, sacV: [0, 0],
+    lidRaw: [0, 0], lid: [0, 0], lidN: [null, null], kissRaw: 0, kiss: 0, tongueRaw: 0, tongue: 0,
+    liveKiss: 0, liveTongue: 0, liveSmile: 0, liveFrown: 0, liveSquint: 0,
+    exprBuf: new Float32Array(478 * 3), resBuf: new Float32Array(478 * 3), tgtBuf: new Float32Array(478 * 3),
+    outBuf: new Float32Array(478 * 3),
+    perf: { last: 0, dt: 1 / 60, fps: 0, n: 0, t0: 0, hud: 0, t: 0 },
+    pose: { cur: null, neu: null, JI: null, tick: 0 },
+    pointList: null, partIdx: null, p2: null,
+    lastFaceAt: -1e9, err: null, status: '', statusBase: '', rec: null, recStream: null, chunks: [], keyT: false,
+    photoName: 'photo', idle: { next: 0, at: 0 }, crash: null
+  };
+
+  /* --------------------------------------------------------- utilities */
+  function setStatus(msg) { A.status = msg; const el = $('status'); if (el) el.textContent = msg; }
+  function flashStatus(msg, ms) {
+    const el = $('status');
+    if (el) {
+      el.textContent = msg;
+      clearTimeout(A._st);
+      A._st = setTimeout(() => { const e2 = $('status'); if (e2) e2.textContent = A.statusBase || A.status; }, ms || 2800);
+    }
+  }
+  const num = (id, dflt) => { const el = $(id); const v = el ? parseFloat(el.value) : NaN; return isFinite(v) ? v : dflt; };
+  const chk = (id) => { const el = $(id); return !!(el && el.checked); };
+
+  /* ------------------------------------------------------------- boot */
+  async function boot(vision) {
+    A.MP = vision;
+    wireControls();
+    setStatus('Loading the face model…');
+    try {
+      const fileset = await vision.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+      const faceModel = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
+      const makeFace = async (mode) => {
+        for (const delegate of ['GPU', 'CPU']) {
+          try {
+            return await vision.FaceLandmarker.createFromOptions(fileset, {
+              baseOptions: { modelAssetPath: faceModel, delegate },
+              runningMode: mode, numFaces: 1, outputFaceBlendshapes: mode === 'VIDEO'
+            });
+          } catch (e) { if (delegate === 'CPU') throw e; }
+        }
+      };
+      A.faceImg = await makeFace('IMAGE');
+      A.faceVid = await makeFace('VIDEO');
+      try {
+        const poseModel = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
+        const mk = async (mode) => {
+          for (const delegate of ['GPU', 'CPU']) {
+            try {
+              return await vision.PoseLandmarker.createFromOptions(fileset, { baseOptions: { modelAssetPath: poseModel, delegate }, runningMode: mode, numPoses: 1 });
+            } catch (e) { if (delegate === 'CPU') throw e; }
+          }
+        };
+        A.poseImg = await mk('IMAGE');
+        A.poseVid = await mk('VIDEO');
+      } catch (e) { A.poseErr = e && e.message; }
+      const cb = $('camBtn');
+      if (cb) cb.disabled = false;
+      setStatus('Ready. Start the webcam, then choose a photo (or snapshot yourself).');
+      requestAnimationFrame(tick);
+    } catch (e) {
+      A.err = e;
+      setStatus('Could not load the face model: ' + (e && e.message) + ' — this page needs cdn.jsdelivr.net and storage.googleapis.com.');
+      requestAnimationFrame(tick);
+    }
+  }
+
+  /* -------------------------------------------------------- source image */
+  function loadImage(file) {
+    if (!A.faceImg) { setStatus('The face model is still loading — try again in a second.'); return; }
+    const img = new Image();
+    img.onload = () => {
+      try { setPhotoFromElement(img, img.naturalWidth, img.naturalHeight, (file && file.name) || 'photo'); }
+      finally { URL.revokeObjectURL(img.src); }
+    };
+    img.onerror = () => setStatus('That file could not be decoded as an image.');
+    img.src = URL.createObjectURL(file);
+  }
+  function setPhotoFromElement(el, w, h, name) {
+    if (!w || !h) { setStatus('That source has no pixels yet — try again.'); return; }
+    const s = Math.min(1, 1000 / Math.max(w, h));
+    const canvas = RR.makeCanvas(w * s, h * s);
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(el, 0, 0, canvas.width, canvas.height);
+    let res = null;
+    try { res = A.faceImg.detect(canvas); } catch (e) { setStatus('Detection failed: ' + e.message); return; }
+    if (!res || !res.faceLandmarks || !res.faceLandmarks.length) {
+      setStatus('No face found in that image. Try a clearer, front-facing photo with even lighting.');
+      return;
+    }
+    const tess = (A.MP.FaceLandmarker && A.MP.FaceLandmarker.FACE_LANDMARKS_TESSELATION) || null;
+    buildFromLandmarks(res.faceLandmarks[0], canvas, tess);
+    A.photoName = name || 'photo';
+    /* the photo's own shoulders, if present: drives the pinned skirt */
+    A.pose.JI = null;
+    if (A.poseImg) {
+      try {
+        const pr = A.poseImg.detect(canvas);
+        const lm = pr && pr.landmarks && pr.landmarks[0];
+        if (lm && lm[11] && lm[12] && lm[11].visibility > .4 && lm[12].visibility > .4) {
+          const q = lm.map(p => [p.x * canvas.width, p.y * canvas.height, p.visibility]);
+          if (Math.hypot(q[11][0] - q[12][0], q[11][1] - q[12][1]) > A.head.fh * 0.35) A.pose.JI = q;
+        }
+      } catch (e) { /* body is optional */ }
+    }
+    const pb = $('photoBtn'), rb = $('recordBtn');
+    if (pb) pb.disabled = false;
+    if (rb) rb.disabled = false;
+    setStatus(`Face found — ${A.mesh.n} mesh points, ${Math.round(A.mesh.base.length / 3)} shell triangles`
+      + (A.pose.JI ? ', upper-body landmarks detected.' : ' (head-only photo).')
+      + ' Drag a dot, or click the face with Smile / Frown / Mouth O.');
+    A.statusBase = A.status;
+    resizeStage();
+  }
+  /* shared by the real path and the headless test hook */
+  function buildFromLandmarks(landmarks, canvas, tessellation) {
+    A.src = canvas;
+    A.puppetCtx = null;
+    const W = canvas.width, H = canvas.height;
+    let adjacency = null;
+    if (tessellation) {
+      const adj = Array.from({ length: 478 }, () => []);
+      const seen = Array.from({ length: 478 }, () => new Set());
+      for (const c of tessellation) {
+        if (c.start < 478 && c.end < 478 && !seen[c.start].has(c.end)) {
+          adj[c.start].push(c.end); adj[c.end].push(c.start);
+          seen[c.start].add(c.end); seen[c.end].add(c.start);
+        }
+      }
+      adjacency = adj;
+    }
+    A.head = E.buildCanonical(landmarks, W, H, { adjacency });
+    A.mesh = E.buildMesh(A.head, { delaunay: root.Delaunator, tessellation });
+    A.ses = RR.createSession();
+    RR.sessionInit(A.ses, { source: canvas, canvas: $('puppet'), head: A.head, mesh: A.mesh });
+    A.tracker = E.createTracker(A.head, {});
+    A.p2 = Array.from({ length: 478 }, () => ({ x: 0, y: 0 }));
+    A.sculpt = new Float32Array(478 * 2);
+    A.outBuf.fill(0);
+    A.tgtBuf.fill(0);
+    A.bag = [];
+    A.drag = -1; A.hover = -1;
+    A.lidN = [null, null];
+    A.gazeNeutral = [[0, 0], [0, 0]];
+    buildPoints();
+    buildPartners();
+  }
+  function buildPoints() {
+    const list = [];
+    for (const g in GROUPS) {
+      const seen = new Set();
+      for (const v of GROUPS[g]) {
+        if (seen.has(v)) continue;
+        seen.add(v);
+        list.push({ v, k: v, c: GROUP_COLOR[g], g });
+      }
+    }
+    A.pointList = list;
+  }
+  /* mirror partner of every landmark, for symmetric dragging */
+  function buildPartners() {
+    const P = A.head.P, mid = A.head.mid[0], fh = A.head.fh;
+    A.partIdx = new Int16Array(478).fill(-1);
+    for (let i = 0; i < 478; i++) {
+      const mx = 2 * mid - P[i][0], my = P[i][1];
+      let bi = -1, bd = (0.05 * fh) ** 2;
+      for (let j = 0; j < 478; j++) {
+        if (j === i) continue;
+        const d = (P[j][0] - mx) ** 2 + (P[j][1] - my) ** 2;
+        if (d < bd) { bd = d; bi = j; }
+      }
+      A.partIdx[i] = bi;
+    }
+  }
+
+  /* ------------------------------------------------------------- webcam */
+  async function startCamera() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }, audio: false
+      });
+      A.stream = stream;
+      const vid = $('vid');
+      vid.srcObject = stream;
+      await vid.play();
+      A.cam = RR.makeCanvas(vid.videoWidth || 640, vid.videoHeight || 480);
+      A.cam.getContext('2d', { willReadFrequently: true });
+      A.camOn = true;
+      const cb = $('camBtn');
+      if (cb) cb.disabled = true;
+      ['snapBtn', 'calBtn', 'photoBtn', 'recordBtn'].forEach(id => { const b = $(id); if (b) b.disabled = false; });
+      resizeStage();
+      setStatus('Webcam running. Sit so head and shoulders are in frame and relax your face — that becomes the neutral pose.');
+      A.statusBase = A.status;
+    } catch (e) {
+      const denied = e && (e.name === 'NotAllowedError' || e.name === 'SecurityError');
+      setStatus(denied
+        ? 'Camera blocked. Allow camera access for this page — if the preview is embedded in a frame, open it in its own tab and press Start webcam again.'
+        : 'Webcam unavailable: ' + (e && e.message ? e.message : e) + ' — this needs https:// or localhost plus camera permission.');
+    }
+  }
+  function snapshotFromWebcam() {
+    const vid = $('vid');
+    if (!A.camOn || !vid || !vid.videoWidth || !vid.videoHeight) { flashStatus('Start the webcam first.'); return; }
+    /* Tracking is performed on a horizontally mirrored camera frame.  Use
+       that same convention for the still source, otherwise neutral pose and
+       the snapshot have opposite handedness and yaw appears to pull the face
+       across the image.  Refresh the reusable tracking canvas at click time
+       so the captured photo is not one decoded frame behind. */
+    const W = vid.videoWidth, H = vid.videoHeight;
+    if (!A.cam || A.cam.width !== W || A.cam.height !== H) A.cam = RR.makeCanvas(W, H);
+    const ctx = A.cam.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    ctx.save();
+    ctx.setTransform(-1, 0, 0, 1, W, 0);
+    ctx.drawImage(vid, 0, 0, W, H);
+    ctx.restore();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    setPhotoFromElement(A.cam, W, H, 'webcam snapshot');
+  }
+  function neutralSet() {
+    if (!A.tracker || !A.tracker.have) { flashStatus('No tracked face yet — look at the camera, then press it again.'); return; }
+    E.trackerSetNeutral(A.tracker, A.cam ? A.cam.width : 640, A.cam ? A.cam.height : 480);
+    if (syncP2()) A.gazeNeutral = [E.irisOffset(A.p2, 'L'), E.irisOffset(A.p2, 'R')];
+    if (A.pose.cur) A.pose.neu = A.pose.cur.map(p => p.slice());
+    flashStatus('Neutral pose stored — the pose glides to it.');
+  }
+
+  /* --------------------------------------------------- detection frame */
+  function runDetection(t) {
+    const vid = $('vid');
+    if (!A.camOn || !vid || vid.readyState < 2) return false;
+    if (vid.currentTime === A.lastVideoTime) return false;
+    A.lastVideoTime = vid.currentTime;
+    const cv = A.cam, ctx = cv.getContext('2d');
+    ctx.save();
+    ctx.setTransform(-1, 0, 0, 1, cv.width, 0);
+    ctx.drawImage(vid, 0, 0, cv.width, cv.height);
+    ctx.restore();
+    let res = null;
+    try { res = A.faceVid.detectForVideo(cv, t); } catch (e) { A.err = e; return false; }
+    const L = res && res.faceLandmarks && res.faceLandmarks[0];
+    if (L && E.trackerPush(A.tracker, L, cv.width, cv.height, t)) {
+      A.lastFaceAt = t;
+      if (!A.tracker.neutral) neutralSet();
+      readSignals(res);
+    }
+    if (A.poseVid && ((A.pose.tick = (A.pose.tick + 1) & 1) === 0)) {
+      try {
+        const pr = A.poseVid.detectForVideo(cv, t);
+        const lm = pr && pr.landmarks && pr.landmarks[0];
+        if (lm) {
+          const q = lm.map(p => [p.x * cv.width, p.y * cv.height, p.visibility]);
+          const prev = A.pose.cur;
+          A.pose.cur = prev ? q.map((p, i) => [lerp(prev[i][0], p[0], .45), lerp(prev[i][1], p[1], .45), p[2]]) : q;
+          if (!A.pose.neu && q[11] && q[11][2] > .5 && q[12] && q[12][2] > .5) A.pose.neu = A.pose.cur.map(p => p.slice());
+        }
+      } catch (e) { /* body is a bonus */ }
+    }
+    return true;
+  }
+
+  /* raw signals out of a detection result (persistent, per video frame) */
+  function readSignals(res) {
+    const bs = (res.faceBlendshapes && res.faceBlendshapes[0] && res.faceBlendshapes[0].categories) || [];
+    const bv = E.blendGetter(bs);
+    if (!syncP2()) return;
+    const p2 = A.p2;
+    const live = A.preset === 'live' || chk('pmix');
+    /* eyelids: blendshape and geometry agree most of the time */
+    for (const which of ['L', 'R']) {
+      const e = which === 'L' ? 0 : 1;
+      const ratio = E.eyeOpeningRatio(p2, which);
+      if (!A.lidN[e]) A.lidN[e] = ratioTracker(ratio);
+      ratioTrack(A.lidN[e], ratio);
+      const geo = clamp01((A.lidN[e].v * 0.84 - ratio) / (A.lidN[e].v * 0.6));
+      const bl = clamp01((bv(which === 'L' ? 'eyeBlinkLeft' : 'eyeBlinkRight') - 0.12) / 0.62);
+      let m = mix(geo, bl, 0.4);
+      const other = e === 0 ? 1 : 0;
+      const otherV = A.lidRaw[other];
+      if (Math.abs((A.lidRaw[e] || 0) - otherV) > 0.45) m = Math.min(m, otherV * 0.3 + 0.02);  // a wink keeps the far eye open
+      A.lidRaw[e] = clamp01(m);
+    }
+    const L = A.live;
+    for (const k in L) L[k] = 0;
+    if (live) {
+      const smile = (bv('mouthSmileLeft') + bv('mouthSmileRight')) / 2;
+      L.j = clamp01((bv('jawOpen') - 0.04) / 0.68);
+      L.sL = L.sR = clamp01(smile * 1.2);
+      L.fr = clamp01((bv('mouthFrownLeft') + bv('mouthFrownRight')) / 2 * 1.2);
+      L.bu = clamp01(bv('browInnerUp') * 0.7 + (bv('browOuterUpLeft') + bv('browOuterUpRight')) / 2 * 0.6);
+      L.buR = clamp01(bv('browOuterUpRight') * 0.9) - 0.45;
+      L.bd = clamp01(((bv('browDownLeft') + bv('browDownRight')) / 2) * 1.15);
+      L.sq = clamp01(((bv('eyeSquintLeft') + bv('eyeSquintRight')) / 2) * 1.1);
+      L.nz = clamp01((bv('noseSneerLeft') + bv('noseSneerRight')) / 2);
+      L.ur = clamp01((bv('mouthUpperUpLeft') + bv('mouthUpperUpRight')) / 2);
+      L.ck = clamp01(((bv('cheekPuff') + bv('cheekSquintLeft') + bv('cheekSquintRight')) / 3) * 1.2);
+      A.liveKiss = clamp01(Math.max(nz(bv('mouthPucker')), nz(bv('mouthFunnel')) * 0.7) * 1.5 - 0.08);
+      A.liveTongue = clamp01((nz(bv('tongueOut')) * num('tsens', 1.4) - 0.05) / 0.5);
+    } else {
+      A.liveKiss = A.liveTongue = 0;
+    }
+  }
+
+  /* ------------------------------------------------- per-frame smoothing */
+  const syncP2 = () => {
+    const src = A.tracker && A.tracker.src;
+    if (!src || !src[0]) return false;
+    const p2 = A.p2 || (A.p2 = Array.from({ length: 478 }, () => ({ x: 0, y: 0 })));
+    for (let i = 0; i < 478; i++) { p2[i].x = src[i][0]; p2[i].y = src[i][1]; }
+    return true;
+  };
+  function smoothSignals(dt) {
+    const live = A.tracker && A.tracker.trust > 0.25;
+    const sens = num('bl', 1);
+    if (!live && chk('idleBlink') && !A.camOn) {
+      const t = A.perf.t * 1000;
+      if (t > A.idle.next) { A.idle.next = t + 2200 + Math.random() * 3200; A.idle.at = t; }
+      const k = (t - A.idle.at) / 190;
+      const v = k < 1 ? Math.sin(Math.PI * clamp01(k)) : 0;
+      A.lidRaw[0] = A.lidRaw[1] = v;
+    } else if (!live && chk('idleBlink')) {
+      const t = A.perf.t * 1000;
+      if (t > A.idle.next) { A.idle.next = t + 2200 + Math.random() * 3200; A.idle.at = t; }
+      const k = (t - A.idle.at) / 190;
+      const v = k < 1 ? Math.sin(Math.PI * clamp01(k)) : 0;
+      A.lidRaw[0] = Math.max(A.lidRaw[0], v);
+      A.lidRaw[1] = Math.max(A.lidRaw[1], v);
+    }
+    for (let e = 0; e < 2; e++) {
+      const target = live ? clamp01((A.lidRaw[e] * sens - 0.08) / 0.74) : slew(A.lid[e], 0, dt, 3.2, 3.2);
+      A.lid[e] = live ? envelope(A.lid[e], target, dt, 26, 17) : slew(A.lid[e], 0, dt, 3.2, 3.2);
+    }
+    /* actions: preset layer and webcam layer, then one rate limit */
+    const presetActs = A.preset === 'Talking' ? E.talkAt(A.perf.t) : (E.PRESETS[A.preset] || null);
+    const amt = num('pi', 1);
+    for (const k of E.ACTIONS) {
+      let v = 0;
+      if (presetActs && presetActs[k]) v = nz(presetActs[k]) * amt;
+      if (live && A.live[k]) {
+        const gain = k === 'j' ? 0.8 : (A.preset === 'live' ? 0.35 : 0.5);
+        v = Math.max(v, nz(A.live[k]) * gain);
+      }
+      A.target[k] = v;
+      A.actions[k] = slew(nz(A.actions[k]), v, dt, 2.2, 1.9);
+    }
+    A.kiss = envelope(A.kiss, clamp01(nz(A.liveKiss) * (live ? 1 : 0)), dt, 14, 10);
+    A.tongue = envelope(A.tongue, clamp01(Math.max((live ? nz(A.liveTongue) : 0), nz(A.actions.tg), (chk('forceTongue') || A.keyT) ? 1 : 0)), dt, 16, 9);
+    /* gaze: tracked iris offset, or idle saccades when nothing drives it */
+    if (live) syncP2();
+    const gg = num('gg', 1.9);
+    const now = A.perf.t * 1000;
+    if (now > A.sacT) { A.sacT = now + 700 + Math.random() * 2400; A.sacV = [(Math.random() - .5) * .07, (Math.random() - .5) * .045]; }
+    for (let e = 0; e < 2; e++) {
+      let gx, gy;
+      if (live && A.p2 && A.p2[468]) {
+        const r = E.irisOffset(A.p2, e ? 'R' : 'L');
+        gx = (r[0] - A.gazeNeutral[e][0]) * gg;
+        gy = (r[1] - A.gazeNeutral[e][1]) * gg;
+      } else { gx = A.sacV[0]; gy = A.sacV[1]; }
+      gx += (A.actions.gx || 0) * 0.22;
+      gy += (A.actions.gy || 0) * 0.11;
+      A.gazeS[e][0] += (gx - A.gazeS[e][0]) * clamp01(dt * 26);
+      A.gazeS[e][1] += (gy - A.gazeS[e][1]) * clamp01(dt * 26);
+      A.gaze[e] = [clamp(A.gazeS[e][0], -.30, .30), clamp(A.gazeS[e][1], -.14, .14)];
+    }
+    /* visemes from the microphone */
+    if (A.micOn && A.analyser && A.freq) {
+      const n = A.analyser.frequencyBinCount;
+      A.analyser.getByteFrequencyData(A.freq);
+      let sum = 0;
+      for (let i = 0; i < n; i++) sum += A.freq[i] * A.freq[i];
+      const rms = Math.sqrt(sum / n) / 255;
+      const va = E.visemeActions(E.visemeUpdate(A.vis, A.freq, rms, dt), 1);
+      if (va) for (const k in va) {
+        const v = va[k];
+        A.target[k] = Math.max(nz(A.target[k]), v);
+        A.actions[k] = slew(nz(A.actions[k]), A.target[k], dt, 4.2, 3.6);
+      }
+    }
+  }
+
+  /* ------------------------------------------------------ expression mix */
+  function composeDelta(dt) {
+    const strength = num('exs', 0.8);
+    const acts = { ...A.actions, pk: Math.max(nz(A.actions.pk), nz(A.kiss)), tg: Math.max(nz(A.actions.tg), nz(A.tongue)) };
+    const d1 = E.expressionDelta(A.head, acts, A.exprBuf);
+    for (let i = 0; i < 478 * 3; i++) A.tgtBuf[i] = d1[i] * strength;
+    const useRes = A.tracker && A.tracker.neutral && (A.preset === 'live' ? true : chk('pmix'));
+    if (useRes) {
+      const g = clamp01(strength * 1.15) * A.tracker.trust;
+      E.retargetResidual(A.head, null, A.tracker.residual, g, A.resBuf);
+      for (let i = 0; i < 478 * 3; i++) A.tgtBuf[i] += A.resBuf[i];
+    }
+    A.deltaExpr.set(A.tgtBuf.subarray(0, 478 * 3));   // expression without the sculpt
+    for (let i = 0; i < 478; i++) {
+      A.tgtBuf[i * 3] += A.sculpt[i * 2];
+      A.tgtBuf[i * 3 + 1] += A.sculpt[i * 2 + 1];
+    }
+    /* one global rate limit on the finished delta */
+    const cap = A.head.fw * 3.0;
+    for (let i = 0; i < 478 * 3; i++) A.outBuf[i] = slew(A.outBuf[i], A.tgtBuf[i], dt, cap, cap);
+    return A.outBuf;
+  }
+
+  /* ---------------------------------------------------------------- loop */
+  function tick(now) {
+    requestAnimationFrame(tick);
+    try { step(now); } catch (e) {
+      if (!A.crash) { A.crash = e; console.error(e); setStatus('Render error: ' + e.message); }
+    }
+  }
+  function step(now, renderFrame = true) {
+    const t = now || (root.performance ? performance.now() : Date.now());
+    const P = A.perf;
+    if (!P.last) P.last = t;
+    P.dt = clamp((t - P.last) / 1000, 1 / 240, 0.06);
+    P.last = t; P.t += P.dt;
+    P.n++;
+    if (t - P.t0 > 500) { P.fps = Math.round(P.n * 1000 / Math.max(1, t - P.t0)); P.n = 0; P.t0 = t; }
+    if (A.ses && A.ses.ready) {
+      if (A.camOn) runDetection(t);
+      if (A.tracker && A.tracker.neutral) {
+        E.trackerUpdate(A.tracker, P.dt, {
+          yawGain: num('turn', 1), pitchGain: num('turn', 1) * 0.75, rollGain: num('turn', 1) * 0.6,
+          yawLimit: 46, pitchLimit: 26, rollLimit: 22, exprGain: 1,
+          poseRate: 24, poseSpeed: 5.6, dropoutMs: 420
+        });
+      } else if (A.tracker) E.trackerIdle(A.tracker, P.dt);
+      smoothSignals(P.dt);
+      if (!A.puppetCtx) A.puppetCtx = $('puppet').getContext('2d');
+      const q = A.tracker ? A.tracker.q : [0, 0, 0, 1];
+      const trust = A.tracker ? A.tracker.trust : 0;
+      const fw = A.head.fw;
+      const st = {
+        t: P.t, dt: P.dt, ctx: A.puppetCtx, quality: A.quality,
+        q,
+        ox: trust > 0.02 ? A.tracker.ox * fw * 0.5 : 0,
+        oy: trust > 0.02 ? A.tracker.oy * fw * 0.4 : 0,
+        scale: trust > 0.02 ? A.tracker.scale : 1,
+        focal: num('focal', 3.1),
+        depthGain: num('dp', 1.3) - 1,
+        deltaCanonical: composeDelta(P.dt),
+        jawOpen: clamp01(nz(A.actions.j) * 1.4),
+        jawMeshGain: 1,
+        limits: chk('lim'), shade: num('fs', 0.35), hairGain: num('hs', 0.6),
+        gaze: A.gaze, gazeGain: num('gg', 1.9), lid: A.lid, tongue: A.tongue,
+        vis: num('tv', 0.4), bright: num('tb', 1.15), warmth: num('tw', 0),
+        showPoints: chk('showPts'), showMesh: chk('showMesh'), origOnly: chk('showOrig'),
+        points: A.pointList, dragIndex: A.drag >= 0 ? A.drag : -1, hoverIndex: A.hover >= 0 ? A.hover : -1,
+        bodyAt: (A.pose.JI && A.pose.cur && A.pose.neu) ? bodyAt : null
+      };
+      if (renderFrame) {
+        RR.sessionFrame(A.ses, st);
+        if (P.t - P.hud > 0.25) { P.hud = P.t; updateHud(A.ses.lastDebug || {}); }
+      } else {
+        /* Headless harnesses can exercise the pose/expression/deformation
+           chain without issuing thousands of Canvas2D triangle calls. */
+        RR.deform(A.ses, st);
+      }
+    } else if (A.src) {
+      const ctx = $('puppet').getContext('2d');
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, $('puppet').width, $('puppet').height);
+      ctx.drawImage(A.src, 0, 0);
+    }
+  }
+  function updateHud(dbg) {
+    const el = $('meters');
+    if (!el) return;
+    const Y = A.tracker && A.tracker.trust > 0.05 ? eulerFromQuat(A.tracker.q) : { yaw: 0, pitch: 0, roll: 0 };
+    const deg = 180 / Math.PI;
+    el.textContent = `${A.perf.fps} fps · ${dbg.tris || 0} tris${dbg.culled ? ' (' + dbg.culled + ' mirrored)' : ''}`
+      + ` · yaw ${(Y.yaw * deg).toFixed(0)}° pitch ${(Y.pitch * deg).toFixed(0)}° roll ${(Y.roll * deg).toFixed(0)}°`
+      + ` · mouth ${(dbg.mouth ? dbg.mouth.h * 100 : 0).toFixed(0)}% · jaw ${((A.ses.jaw || 0) * deg).toFixed(0)}°`
+      + (A.camOn ? (A.tracker && A.tracker.trust > 0.35 ? ' · tracking' : ' · searching for a face') : ' · webcam off')
+      + (A.micOn ? ' · mic on' : '');
+  }
+
+  /* body motion (rigid-ish shoulders) mapped into the photo's pixel scale */
+  function bodyAt(x, y) {
+    const JI = A.pose.JI, cur = A.pose.cur, neu = A.pose.neu;
+    const B = num('bm', 1) * 0.9;
+    if (B <= 0.001) return null;
+    const pn0 = (neu[11] && neu[12]) ? Math.hypot(neu[11][0] - neu[12][0], neu[11][1] - neu[12][1]) || 1 : 1;
+    const webcamFW = A.tracker && A.tracker.have
+      ? Math.hypot(A.tracker.src[454][0] - A.tracker.src[234][0], A.tracker.src[454][1] - A.tracker.src[234][1]) : 0;
+    const k = webcamFW > 1 ? A.head.fw / webcamFW : 1;
+    const sw = Math.max(1, pn0 * 0.85);
+    const br = Math.sin(A.perf.t * 1.6) * A.head.fh * 0.004 * B;
+    let dx = 0, dy = 0, wsum = 0;
+    for (let j = 11; j <= 16; j++) {
+      if (!cur || !cur[j] || !neu[j] || cur[j][2] < 0.4 || !JI[j]) continue;
+      const dist = Math.hypot(x - JI[j][0], y - JI[j][1]);
+      const w = Math.exp(-(dist * dist) / (2 * sw * sw));
+      dx += (cur[j][0] - neu[j][0]) * k * B * w;
+      dy += ((cur[j][1] - neu[j][1]) * k * B + (j < 13 ? br : 0)) * w;
+      wsum += w;
+    }
+    if (wsum < 1e-4) return [0, br];
+    return [dx / (wsum + 0.25), dy / (wsum + 0.25)];
+  }
+
+  /* ------------------------------------------------------ interaction */
+  function toCanvas(e) {
+    const pc = $('puppet');
+    const r = pc.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * pc.width / r.width, y: (e.clientY - r.top) * pc.height / r.height };
+  }
+  function resizeStage() {
+    const pc = $('puppet');
+    if (!pc || !A.src) return;
+    const wrap = pc.parentElement;
+    const maxW = wrap ? Math.max(280, wrap.clientWidth - 16) : 640;
+    const scale = Math.min(1, maxW / A.src.width);
+    pc.style.width = Math.round(A.src.width * scale) + 'px';
+    pc.style.height = 'auto';
+  }
+  function nearestPoint(m, r) {
+    if (!A.ses) return -1;
+    let bi = -1, bd = (r || 34) ** 2;
+    for (const p of A.pointList) {
+      const i = p.v;
+      const dx = A.ses.DST[i * 2] - m.x, dy = A.ses.DST[i * 2 + 1] - m.y;
+      const d = dx * dx + dy * dy;
+      if (d < bd) { bd = d; bi = p.k; }
+    }
+    return bi;
+  }
+  /* screen px -> canonical px.  Solves the *actual* mapping the renderer
+     uses,  dst = S2 + w·(proj(base + delta) − proj(base)),  with a numerical
+     Jacobian — so the dot lands under the pointer even while the head is
+     turned, the face is scaled and an expression is running.            */
+  function screenToCanonical(i, target) {
+    const S = A.ses, head = A.head;
+    if (!S || !S.proj || !head) return [0, 0, 0];
+    const w = A.mesh ? A.mesh.w[i] : 1;
+    const base = head.P[i];
+    const p0 = S.proj(base);
+    const sx = S.S2[i * 2], sy = S.S2[i * 2 + 1];
+    const ex = A.deltaExpr[i * 3], ey = A.deltaExpr[i * 3 + 1];
+    const at = (x, y) => {
+      const p = S.proj([base[0] + ex + x, base[1] + ey + y, base[2]]);
+      return [sx + (p[0] - p0[0]) * w, sy + (p[1] - p0[1]) * w];
+    };
+    let x = A.sculpt[i * 2], y = A.sculpt[i * 2 + 1];
+    const h = Math.max(0.25, head.fw * 0.002);
+    for (let it = 0; it < 4; it++) {
+      const c = at(x, y);
+      const ax = at(x + h, y), ay = at(x, y + h);
+      const j00 = (ax[0] - c[0]) / h, j01 = (ay[0] - c[0]) / h;
+      const j10 = (ax[1] - c[1]) / h, j11 = (ay[1] - c[1]) / h;
+      const r0 = target.x - c[0], r1 = target.y - c[1];
+      if (Math.hypot(r0, r1) < 0.25) break;
+      const det = j00 * j11 - j01 * j10;
+      if (!isFinite(det) || Math.abs(det) < 1e-6) break;
+      x += (j11 * r0 - j01 * r1) / det;
+      y += (-j10 * r0 + j00 * r1) / det;
+    }
+    return [x, y, 0];
+  }
+  function groupOf(k) { const p = A.pointList && A.pointList.find(q => q.k === k); return p ? p.g : 'oval'; }
+  function pushUndo() { A.bag.push({ s: A.sculpt.slice(), o: A.outBuf.slice() }); if (A.bag.length > 40) A.bag.shift(); }
+  function undo() {
+    const b = A.bag.pop();
+    if (!b) return;
+    A.sculpt.set(b.s); A.outBuf.set(b.o);
+  }
+  function setDragPoint(k, target) {
+    const head = A.head;
+    const d = screenToCanonical(k, target);
+    const cap = (CAP[groupOf(k)] || 0.05) * head.fh * num('dr', 1);
+    const L = Math.hypot(d[0], d[1]);
+    if (L > cap) { d[0] *= cap / L; d[1] *= cap / L; }
+    A.sculpt[k * 2] = d[0];
+    A.sculpt[k * 2 + 1] = d[1];
+    const partner = A.partIdx ? A.partIdx[k] : -1;
+    if (chk('sym') && partner >= 0 && partner !== k) {
+      A.sculpt[partner * 2] = -d[0];
+      A.sculpt[partner * 2 + 1] = d[1];
+    }
+  }
+  function insideFace(screen) {
+    if (!A.ses || !screen || !Number.isFinite(screen.x) || !Number.isFinite(screen.y)) return false;
+    const poly = E.CONTOUR.map(i => {
+      const k = i * 2;
+      return A.ses.frames > 0
+        ? { x: A.ses.DST[k], y: A.ses.DST[k + 1] }
+        : { x: A.ses.S2[k], y: A.ses.S2[k + 1] };
+    });
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const a = poly[i], b = poly[j];
+      const crosses = (a.y > screen.y) !== (b.y > screen.y);
+      if (crosses && screen.x < (b.x - a.x) * (screen.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+    }
+    return inside;
+  }
+  /* click-to-sculpt: only accept a real hit on the projected face contour;
+     edits remain in canonical space, so the shape stays on the face as it turns. */
+  function sculptShape(kind, screen) {
+    if (!A.head || !insideFace(screen)) return false;
+    const u = A.head.fw * 0.1;
+    const move = (i, dx, dy) => {
+      A.sculpt[i * 2] += dx;
+      A.sculpt[i * 2 + 1] += dy;
+      const p = chk('sym') && A.partIdx ? A.partIdx[i] : -1;
+      if (p >= 0 && p !== i) { A.sculpt[p * 2] += -dx; A.sculpt[p * 2 + 1] += dy; }
+    };
+    pushUndo();
+    if (kind === 'smile') { move(61, -u * .12, -u * .62); move(291, u * .12, -u * .62); move(13, 0, -u * .1); move(14, 0, u * .18); move(48, 0, -u * .16); move(278, 0, -u * .16); move(205, 0, -u * .1); move(425, 0, -u * .1); }
+    else if (kind === 'frown') { move(61, -u * .08, u * .56); move(291, u * .08, u * .56); move(13, 0, u * .08); move(14, 0, -u * .1); }
+    else if (kind === 'o') { move(61, u * .72, 0); move(291, -u * .72, 0); move(13, 0, -u * .46); move(14, 0, u * .72); move(0, 0, -u * .26); move(17, 0, u * .26); }
+    else if (kind === 'kiss') { move(61, u * .3, 0); move(291, -u * .3, 0); move(13, 0, -u * .14); move(14, 0, u * .2); move(0, 0, -u * .18); move(17, 0, u * .22); }
+    else if (kind === 'sad') { move(61, -u * .06, u * .46); move(291, u * .06, u * .46); move(70, 0, u * .26); move(300, 0, u * .26); }
+    else if (kind === 'brows') { move(105, 0, -u * .62); move(334, 0, -u * .62); move(107, 0, -u * .5); move(336, 0, -u * .5); }
+    else if (kind === 'wink') { move(159, 0, u * .5); move(145, 0, -u * .44); }
+    else if (kind === 'puff') { move(205, u * .45, 0); move(425, -u * .45, 0); move(50, u * .3, 0); move(280, -u * .3, 0); }
+    else if (kind === 'reset') { A.sculpt.fill(0); A.outBuf.fill(0); flashStatus('Face sculpt cleared.'); return true; }
+    flashStatus(kind === 'o'
+      ? 'Mouth O applied — drag the inner-mouth dots for fine control.'
+      : (kind === 'brows' ? 'Brows raised.' : kind.charAt(0).toUpperCase() + kind.slice(1) + ' applied — drag dots to refine.'));
+    return true;
+  }
+
+  /* ---------------------------------------------------------- controls */
+  function wireControls() {
+    const on = (id, ev, fn) => { const el = $(id); if (el) el.addEventListener(ev, fn); };
+    on('camBtn', 'click', startCamera);
+    on('file', 'change', e => { const f = e.target.files && e.target.files[0]; if (f) loadImage(f); });
+    on('snapBtn', 'click', snapshotFromWebcam);
+    on('photoBtn', 'click', savePhoto);
+    on('recordBtn', 'click', toggleRecording);
+    on('calBtn', 'click', neutralSet);
+    on('resetBtn', 'click', () => { pushUndo(); A.sculpt.fill(0); A.outBuf.fill(0); flashStatus('Drags reset.'); });
+    on('undoBtn', 'click', undo);
+    on('micBtn', 'click', toggleMic);
+    on('quality', 'change', e => { A.quality = parseInt(e.target.value, 10) || 0; });
+    on('minCamBtn', 'click', () => {
+      const card = $('webcamCard');
+      if (!card) return;
+      const mini = card.classList.toggle('minimized');
+      const b = $('minCamBtn');
+      if (b) b.textContent = mini ? 'Expand' : 'Minimize';
+      resizeStage();
+    });
+    /* populate the two button racks */
+    const presets = $('presets');
+    if (presets && !presets.children.length) {
+      ['Live webcam', ...Object.keys(E.PRESETS)].forEach(nm => {
+        const b = document.createElement('button');
+        b.type = 'button'; b.textContent = nm; b.dataset.preset = nm;
+        if (nm === 'Live webcam') b.classList.add('on');
+        presets.appendChild(b);
+      });
+      presets.addEventListener('click', e => {
+        const b = e.target.closest('button[data-preset]');
+        if (!b) return;
+        A.preset = b.dataset.preset === 'Live webcam' ? 'live' : b.dataset.preset;
+        [...presets.querySelectorAll('button')].forEach(x => x.classList.toggle('on', x === b));
+        flashStatus(A.preset === 'live' ? 'Following your webcam.' : 'Preset: ' + b.dataset.preset);
+      });
+    }
+    const sculpt = $('sculptTools');
+    if (sculpt && !sculpt.children.length) {
+      [['drag', 'Drag landmarks'], ['smile', 'Smile'], ['frown', 'Frown'], ['o', 'Mouth O'],
+       ['kiss', 'Pucker'], ['brows', 'Brow raise'], ['sad', 'Sad'], ['wink', 'Wink'],
+       ['puff', 'Puff cheeks'], ['reset', 'Clear sculpt']].forEach(([k, label]) => {
+        const b = document.createElement('button');
+        b.type = 'button'; b.textContent = label; b.dataset.sculpt = k;
+        if (k === 'drag') b.classList.add('on');
+        sculpt.appendChild(b);
+      });
+      sculpt.addEventListener('click', e => {
+        const b = e.target.closest('button[data-sculpt]');
+        if (!b) return;
+        A.sculptMode = b.dataset.sculpt;
+        [...sculpt.querySelectorAll('button')].forEach(x => x.classList.toggle('on', x === b));
+        const pc = $('puppet');
+        if (pc) pc.style.cursor = A.sculptMode === 'drag' ? 'crosshair' : 'pointer';
+      });
+    }
+    const pc = $('puppet');
+    if (pc) {
+      pc.addEventListener('pointerdown', e => {
+        if (!A.ses || chk('showOrig')) return;
+        const m = toCanvas(e);
+        const mode = A.sculptMode || 'drag';
+        if (mode !== 'drag') { if (sculptShape(mode, m)) e.preventDefault(); return; }
+        const k = nearestPoint(m);
+        if (k < 0) return;
+        pushUndo();
+        A.drag = k;
+        A.dragOff = { x: A.ses.DST[k * 2] - m.x, y: A.ses.DST[k * 2 + 1] - m.y };
+        try { pc.setPointerCapture(e.pointerId); } catch (err) {}
+        pc.style.cursor = 'grabbing';
+        e.preventDefault();
+      });
+      pc.addEventListener('pointermove', e => {
+        if (!A.ses) return;
+        const m = toCanvas(e);
+        if (A.drag >= 0) setDragPoint(A.drag, { x: m.x + A.dragOff.x, y: m.y + A.dragOff.y });
+        else {
+          A.hover = nearestPoint(m);
+          pc.style.cursor = A.hover >= 0 ? 'grab' : (A.sculptMode && A.sculptMode !== 'drag' ? 'pointer' : 'crosshair');
+          if (A.hover >= 0 && A.perf.t - (A._hovT || 0) > 0.6) {
+            A._hovT = A.perf.t;
+            setStatus(GROUP_NAME[groupOf(A.hover)] + ': drag to move · double-click to reset · Ctrl+Z to undo');
+          }
+        }
+      });
+      const stop = () => { A.drag = -1; pc.style.cursor = 'crosshair'; };
+      pc.addEventListener('pointerup', stop);
+      pc.addEventListener('pointercancel', stop);
+      pc.addEventListener('dblclick', e => {
+        const k = nearestPoint(toCanvas(e));
+        if (k >= 0) { pushUndo(); A.sculpt[k * 2] = 0; A.sculpt[k * 2 + 1] = 0; }
+      });
+    }
+    root.addEventListener('keydown', e => {
+      if (!e.target || !/INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) {
+        if (e.key === 't' || e.key === 'T') A.keyT = true;
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); undo(); }
+    });
+    root.addEventListener('keyup', e => { if (e.key === 't' || e.key === 'T') A.keyT = false; });
+    root.addEventListener('resize', resizeStage);
+  }
+
+  /* ----------------------------------------------------------- capture */
+  function savePhoto() {
+    const pc = $('puppet');
+    if (!A.ses || !pc) return;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const a = document.createElement('a');
+    a.download = `trill-face-puppet-${stamp}.png`;
+    a.href = pc.toDataURL('image/png');
+    a.click();
+    flashStatus('Rendered frame saved as a PNG.');
+  }
+  function stopCapturedVideoTracks(stream) {
+    /* captureStream() owns only the canvas video track.  Do not stop the
+       borrowed microphone audio tracks added below — mic lip-sync may still
+       be active for the next recording. */
+    const tracks = stream && (stream.getVideoTracks
+      ? stream.getVideoTracks()
+      : (stream.getTracks ? stream.getTracks().filter(t => t.kind === 'video') : []));
+    for (const tr of tracks || []) { try { tr.stop(); } catch (e) {} }
+  }
+  function toggleRecording() {
+    const btn = $('recordBtn'), pc = $('puppet');
+    if (A.rec) { try { A.rec.stop(); } catch (e) { flashStatus('Could not stop the recording: ' + e.message); } return; }
+    if (!pc || !pc.captureStream || !root.MediaRecorder) { flashStatus('This browser cannot record the canvas.'); return; }
+    let stream;
+    try { stream = pc.captureStream(30); }
+    catch (e) { flashStatus('Could not capture the canvas: ' + e.message); return; }
+    if (!stream) { flashStatus('This browser cannot capture the canvas.'); return; }
+    if (A.micOn && A.micStream) for (const tr of A.micStream.getAudioTracks()) { try { stream.addTrack(tr); } catch (e) {} }
+    A.recStream = stream;
+    A.chunks = [];
+    let rec = null;
+    for (const type of ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp9', 'video/webm']) {
+      try { rec = new root.MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: 8000000 }); break; } catch (e) {}
+    }
+    if (!rec) { try { rec = new root.MediaRecorder(stream); } catch (e) {
+      stopCapturedVideoTracks(stream); A.recStream = null;
+      flashStatus('Recording is not supported here.'); return;
+    } }
+    A.rec = rec;
+    rec.ondataavailable = e => { if (e.data && e.data.size) A.chunks.push(e.data); };
+    rec.onstop = () => {
+      let saved = false;
+      try {
+        const blob = new Blob(A.chunks, { type: rec.mimeType || 'video/webm' });
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const a = document.createElement('a');
+        a.download = `trill-face-puppet-${stamp}.webm`;
+        a.href = URL.createObjectURL(blob);
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+        saved = true;
+      } catch (e) { flashStatus('The recording could not be saved: ' + e.message); }
+      stopCapturedVideoTracks(stream);
+      if (A.rec === rec) A.rec = null;
+      if (A.recStream === stream) A.recStream = null;
+      if (btn) btn.textContent = 'Record video';
+      if (saved) flashStatus('Recording saved.');
+    };
+    try { rec.start(250); }
+    catch (e) {
+      A.rec = null; A.recStream = null; stopCapturedVideoTracks(stream);
+      if (btn) btn.textContent = 'Record video';
+      flashStatus('Could not start recording: ' + e.message); return;
+    }
+    if (btn) btn.textContent = 'Stop recording';
+    flashStatus('Recording the rendered puppet…');
+  }
+  async function toggleMic() {
+    const btn = $('micBtn');
+    if (A.micOn) {
+      A.micOn = false;
+      if (A.micStream) A.micStream.getTracks().forEach(t => t.stop());
+      A.micStream = null;
+      if (btn) btn.textContent = 'Mic lip-sync';
+      flashStatus('Microphone off.');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      A.micStream = stream;
+      const Ctx = root.AudioContext || root.webkitAudioContext;
+      if (!A.audioCtx) A.audioCtx = new Ctx();
+      if (A.audioCtx.state === 'suspended') await A.audioCtx.resume();
+      const src = A.audioCtx.createMediaStreamSource(stream);
+      A.analyser = A.audioCtx.createAnalyser();
+      A.analyser.fftSize = 1024;
+      A.analyser.smoothingTimeConstant = 0.55;
+      A.freq = new Uint8Array(A.analyser.frequencyBinCount);
+      src.connect(A.analyser);
+      A.micOn = true;
+      if (btn) btn.textContent = 'Mic on (click to stop)';
+      flashStatus('Say something — the mouth follows your voice.');
+    } catch (e) {
+      flashStatus('Microphone unavailable: ' + e.message);
+    }
+  }
+
+  /* --------------------------------------------------------- test hooks */
+  const __test = {
+    boot,
+    buildFromLandmarks,
+    setCamera: (lm, w, h, t) => {
+      const ok = E.trackerPush(A.tracker, lm, w, h, t);
+      if (ok && !A.tracker.neutral) E.trackerSetNeutral(A.tracker, w, h);
+      return ok;
+    },
+    signals: readSignals,
+    neutral: neutralSet,
+    frame: (t, dt, renderFrame = true) => {
+      if (dt) A.perf.last = t - dt * 1000;
+      step(t, renderFrame !== false);
+      return {
+        DST: A.ses.DST, depth: A.ses.depth, dbg: A.ses.lastDebug, out: A.outBuf,
+        jaw: A.ses.jaw, q: A.tracker ? A.tracker.q : null, sculpt: A.sculpt,
+        trust: A.tracker ? A.tracker.trust : 0, actions: A.actions, gaze: A.gaze, lid: A.lid,
+        perf: A.perf
+      };
+    },
+    preset: nm => { A.preset = nm; },
+    sculptShape: (kind, m) => sculptShape(kind, m || { x: 0, y: 0 }),
+    lid: v => { A.lidRaw[0] = A.lidRaw[1] = v; },
+    state: () => A,
+    session: () => A.ses,
+    head: () => A.head,
+    mesh: () => A.mesh
+  };
+
+  root.PuppetApp = { boot, __test };
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+
+<script type="module">
+  import { FaceLandmarker, PoseLandmarker, FilesetResolver }
+    from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+  globalThis.PuppetApp.boot({ FaceLandmarker, PoseLandmarker, FilesetResolver });
+</script>
+<script>
+  /* range read-outs (purely presentational) */
+  const sync = () => document.querySelectorAll('input[type=range]').forEach(r => {
+    const out = r.parentElement && r.parentElement.querySelector('output');
+    if (out) out.textContent = (+r.value).toFixed(+r.step < 1 ? 2 : 0);
+  });
+  addEventListener('DOMContentLoaded', () => {
+    sync();
+    document.querySelectorAll('input[type=range]').forEach(r => r.addEventListener('input', sync));
+  });
+  if (document.readyState !== 'loading') setTimeout(sync, 0);
+</script>
+</body>
+</html>
