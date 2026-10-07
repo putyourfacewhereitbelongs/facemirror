@@ -59,7 +59,7 @@
     perf: { last: 0, dt: 1 / 60, fps: 0, n: 0, t0: 0, hud: 0, t: 0 },
     pose: { cur: null, neu: null, JI: null, tick: 0 },
     pointList: null, partIdx: null, p2: null,
-    lastFaceAt: -1e9, err: null, status: '', statusBase: '', rec: null, chunks: [], keyT: false,
+    lastFaceAt: -1e9, err: null, status: '', statusBase: '', rec: null, recStream: null, chunks: [], keyT: false,
     photoName: 'photo', idle: { next: 0, at: 0 }, crash: null
   };
 
@@ -255,8 +255,23 @@
   }
   function snapshotFromWebcam() {
     const vid = $('vid');
-    if (!A.camOn || !vid.videoWidth) { flashStatus('Start the webcam first.'); return; }
-    setPhotoFromElement(vid, vid.videoWidth, vid.videoHeight, 'webcam snapshot');
+    if (!A.camOn || !vid || !vid.videoWidth || !vid.videoHeight) { flashStatus('Start the webcam first.'); return; }
+    /* Tracking is performed on a horizontally mirrored camera frame.  Use
+       that same convention for the still source, otherwise neutral pose and
+       the snapshot have opposite handedness and yaw appears to pull the face
+       across the image.  Refresh the reusable tracking canvas at click time
+       so the captured photo is not one decoded frame behind. */
+    const W = vid.videoWidth, H = vid.videoHeight;
+    if (!A.cam || A.cam.width !== W || A.cam.height !== H) A.cam = RR.makeCanvas(W, H);
+    const ctx = A.cam.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    ctx.save();
+    ctx.setTransform(-1, 0, 0, 1, W, 0);
+    ctx.drawImage(vid, 0, 0, W, H);
+    ctx.restore();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    setPhotoFromElement(A.cam, W, H, 'webcam snapshot');
   }
   function neutralSet() {
     if (!A.tracker || !A.tracker.have) { flashStatus('No tracked face yet — look at the camera, then press it again.'); return; }
@@ -325,6 +340,7 @@
     for (const k in L) L[k] = 0;
     if (live) {
       const smile = (bv('mouthSmileLeft') + bv('mouthSmileRight')) / 2;
+      L.j = clamp01((bv('jawOpen') - 0.04) / 0.68);
       L.sL = L.sR = clamp01(smile * 1.2);
       L.fr = clamp01((bv('mouthFrownLeft') + bv('mouthFrownRight')) / 2 * 1.2);
       L.bu = clamp01(bv('browInnerUp') * 0.7 + (bv('browOuterUpLeft') + bv('browOuterUpRight')) / 2 * 0.6);
@@ -376,7 +392,10 @@
     for (const k of E.ACTIONS) {
       let v = 0;
       if (presetActs && presetActs[k]) v = nz(presetActs[k]) * amt;
-      if (live && A.live[k]) v = Math.max(v, nz(A.live[k]) * (A.preset === 'live' ? 0.35 : 0.5));
+      if (live && A.live[k]) {
+        const gain = k === 'j' ? 0.8 : (A.preset === 'live' ? 0.35 : 0.5);
+        v = Math.max(v, nz(A.live[k]) * gain);
+      }
       A.target[k] = v;
       A.actions[k] = slew(nz(A.actions[k]), v, dt, 2.2, 1.9);
     }
@@ -446,7 +465,7 @@
       if (!A.crash) { A.crash = e; console.error(e); setStatus('Render error: ' + e.message); }
     }
   }
-  function step(now) {
+  function step(now, renderFrame = true) {
     const t = now || (root.performance ? performance.now() : Date.now());
     const P = A.perf;
     if (!P.last) P.last = t;
@@ -477,7 +496,8 @@
         focal: num('focal', 3.1),
         depthGain: num('dp', 1.3) - 1,
         deltaCanonical: composeDelta(P.dt),
-        jawMeshGain: trust > 0.25 ? 0.35 : 1,
+        jawOpen: clamp01(nz(A.actions.j) * 1.4),
+        jawMeshGain: 1,
         limits: chk('lim'), shade: num('fs', 0.35), hairGain: num('hs', 0.6),
         gaze: A.gaze, gazeGain: num('gg', 1.9), lid: A.lid, tongue: A.tongue,
         vis: num('tv', 0.4), bright: num('tb', 1.15), warmth: num('tw', 0),
@@ -485,8 +505,14 @@
         points: A.pointList, dragIndex: A.drag >= 0 ? A.drag : -1, hoverIndex: A.hover >= 0 ? A.hover : -1,
         bodyAt: (A.pose.JI && A.pose.cur && A.pose.neu) ? bodyAt : null
       };
-      RR.sessionFrame(A.ses, st);
-      if (P.t - P.hud > 0.25) { P.hud = P.t; updateHud(A.ses.lastDebug || {}); }
+      if (renderFrame) {
+        RR.sessionFrame(A.ses, st);
+        if (P.t - P.hud > 0.25) { P.hud = P.t; updateHud(A.ses.lastDebug || {}); }
+      } else {
+        /* Headless harnesses can exercise the pose/expression/deformation
+           chain without issuing thousands of Canvas2D triangle calls. */
+        RR.deform(A.ses, st);
+      }
     } else if (A.src) {
       const ctx = $('puppet').getContext('2d');
       ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -609,10 +635,26 @@
       A.sculpt[partner * 2 + 1] = d[1];
     }
   }
-  /* click-to-sculpt: a controlled local edit in canonical space, so the
-     shape stays on the face while the head turns                      */
+  function insideFace(screen) {
+    if (!A.ses || !screen || !Number.isFinite(screen.x) || !Number.isFinite(screen.y)) return false;
+    const poly = E.CONTOUR.map(i => {
+      const k = i * 2;
+      return A.ses.frames > 0
+        ? { x: A.ses.DST[k], y: A.ses.DST[k + 1] }
+        : { x: A.ses.S2[k], y: A.ses.S2[k + 1] };
+    });
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const a = poly[i], b = poly[j];
+      const crosses = (a.y > screen.y) !== (b.y > screen.y);
+      if (crosses && screen.x < (b.x - a.x) * (screen.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+    }
+    return inside;
+  }
+  /* click-to-sculpt: only accept a real hit on the projected face contour;
+     edits remain in canonical space, so the shape stays on the face as it turns. */
   function sculptShape(kind, screen) {
-    if (!A.head) return false;
+    if (!A.head || !insideFace(screen)) return false;
     const u = A.head.fw * 0.1;
     const move = (i, dx, dy) => {
       A.sculpt[i * 2] += dx;
@@ -751,33 +793,60 @@
     a.click();
     flashStatus('Rendered frame saved as a PNG.');
   }
+  function stopCapturedVideoTracks(stream) {
+    /* captureStream() owns only the canvas video track.  Do not stop the
+       borrowed microphone audio tracks added below — mic lip-sync may still
+       be active for the next recording. */
+    const tracks = stream && (stream.getVideoTracks
+      ? stream.getVideoTracks()
+      : (stream.getTracks ? stream.getTracks().filter(t => t.kind === 'video') : []));
+    for (const tr of tracks || []) { try { tr.stop(); } catch (e) {} }
+  }
   function toggleRecording() {
     const btn = $('recordBtn'), pc = $('puppet');
-    if (A.rec) { A.rec.stop(); return; }
+    if (A.rec) { try { A.rec.stop(); } catch (e) { flashStatus('Could not stop the recording: ' + e.message); } return; }
     if (!pc || !pc.captureStream || !root.MediaRecorder) { flashStatus('This browser cannot record the canvas.'); return; }
-    const stream = pc.captureStream(30);
+    let stream;
+    try { stream = pc.captureStream(30); }
+    catch (e) { flashStatus('Could not capture the canvas: ' + e.message); return; }
+    if (!stream) { flashStatus('This browser cannot capture the canvas.'); return; }
     if (A.micOn && A.micStream) for (const tr of A.micStream.getAudioTracks()) { try { stream.addTrack(tr); } catch (e) {} }
+    A.recStream = stream;
     A.chunks = [];
     let rec = null;
     for (const type of ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp9', 'video/webm']) {
       try { rec = new root.MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: 8000000 }); break; } catch (e) {}
     }
-    if (!rec) { try { rec = new root.MediaRecorder(stream); } catch (e) { flashStatus('Recording is not supported here.'); return; } }
+    if (!rec) { try { rec = new root.MediaRecorder(stream); } catch (e) {
+      stopCapturedVideoTracks(stream); A.recStream = null;
+      flashStatus('Recording is not supported here.'); return;
+    } }
     A.rec = rec;
     rec.ondataavailable = e => { if (e.data && e.data.size) A.chunks.push(e.data); };
     rec.onstop = () => {
-      const blob = new Blob(A.chunks, { type: rec.mimeType || 'video/webm' });
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-      const a = document.createElement('a');
-      a.download = `trill-face-puppet-${stamp}.webm`;
-      a.href = URL.createObjectURL(blob);
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-      A.rec = null;
+      let saved = false;
+      try {
+        const blob = new Blob(A.chunks, { type: rec.mimeType || 'video/webm' });
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const a = document.createElement('a');
+        a.download = `trill-face-puppet-${stamp}.webm`;
+        a.href = URL.createObjectURL(blob);
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+        saved = true;
+      } catch (e) { flashStatus('The recording could not be saved: ' + e.message); }
+      stopCapturedVideoTracks(stream);
+      if (A.rec === rec) A.rec = null;
+      if (A.recStream === stream) A.recStream = null;
       if (btn) btn.textContent = 'Record video';
-      flashStatus('Recording saved.');
+      if (saved) flashStatus('Recording saved.');
     };
-    rec.start(250);
+    try { rec.start(250); }
+    catch (e) {
+      A.rec = null; A.recStream = null; stopCapturedVideoTracks(stream);
+      if (btn) btn.textContent = 'Record video';
+      flashStatus('Could not start recording: ' + e.message); return;
+    }
     if (btn) btn.textContent = 'Stop recording';
     flashStatus('Recording the rendered puppet…');
   }
@@ -820,10 +889,11 @@
       if (ok && !A.tracker.neutral) E.trackerSetNeutral(A.tracker, w, h);
       return ok;
     },
+    signals: readSignals,
     neutral: neutralSet,
-    frame: (t, dt) => {
+    frame: (t, dt, renderFrame = true) => {
       if (dt) A.perf.last = t - dt * 1000;
-      step(t);
+      step(t, renderFrame !== false);
       return {
         DST: A.ses.DST, depth: A.ses.depth, dbg: A.ses.lastDebug, out: A.outBuf,
         jaw: A.ses.jaw, q: A.tracker ? A.tracker.q : null, sculpt: A.sculpt,

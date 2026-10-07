@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Trill Face Puppet · 3D head turn, rigid teeth, audio visemes</title>
-<meta name="description" content="Drive a still photograph from a webcam face mesh: perspective head rotation, symmetry-inpainted far side, painter-sorted shell warping, rigid dental arches, procedural tongue, audio visemes, PNG capture and WebM recording." />
+<meta name="description" content="Drive a still photograph from a webcam face mesh: perspective head rotation, mirrored-source far-side approximation, painter-sorted shell warping, procedural dental arches and tongue, audio visemes, PNG capture and WebM recording." />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🎭</text></svg>" />
 <style>
 :root{--bg:#0d0f14;--card:#161a22;--card2:#1b202a;--fg:#e8eaf0;--mut:#8b93a7;--acc:#5eead4;--acc2:#f472b6;--line:#272c38}
@@ -55,18 +55,18 @@ details[open]>summary::before{content:"▾"}
 <a class="backlink" href="index.html#back" id="contLink">◀ Back to FaceMirror · Continue ▶</a>
 <h1>Trill <em>Face Puppet</em></h1>
 <p class="sub">
-  A still photo becomes a closed 3D shell: 478 landmarks lifted into a canonical head space, three hair rings and a pinned
-  frame welded around them. Your webcam's face mesh drives it with a weighted Kabsch rigid fit — pose is separated from
-  expression, so a smile stays on the face while the head turns, the far side is filled by symmetry inpainting instead of
-  stretching, and the oral cavity is rebuilt every frame from a rigid mandible with real tooth proportions and a tongue
-  that has a groove, papillae and a wet highlight. Drag any dot to sculpt; click the face to apply Smile, Frown or Mouth O.
+  A still photo becomes a 2.5D facial shell: 478 landmarks lifted into canonical head space, three hair rings and a pinned
+  frame around them. Your webcam face mesh drives it with a weighted Kabsch fit — pose is separated from expression so a
+  smile stays on the face while the head turns. The unseen far side is approximated from mirrored photo patches rather
+  than generated; the oral cavity uses a rigid jaw, procedural dental arches and a textured tongue. Drag a dot to sculpt,
+  or select Smile, Frown or Mouth O and click the face.
 </p>
 
 <div class="bar">
   <button id="camBtn" class="primary" disabled>Start webcam</button>
   <label class="btn">Choose image…<input id="file" type="file" accept="image/*" hidden></label>
-  <button id="snapBtn" disabled>Snapshot as image</button>
-  <button id="photoBtn" disabled>Save rendered photo</button>
+  <button id="snapBtn" title="Use a mirrored webcam snapshot as the source portrait" disabled>Use webcam snapshot</button>
+  <button id="photoBtn" title="Download the current rendered puppet frame as a PNG" disabled>📷 Save rendered photo</button>
   <button id="recordBtn" disabled>Record video</button>
   <button id="micBtn">Mic lip-sync</button>
   <button id="calBtn" disabled>Set neutral pose</button>

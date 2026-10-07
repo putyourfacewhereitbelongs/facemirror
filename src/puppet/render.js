@@ -5,15 +5,15 @@
    centre, weak-perspective projected and painted far -> near as
    per-triangle affines.
 
-   Why it does not flash, smear or stretch
-     · painter's algorithm + back-face culling: far surface can never
-       paint over near surface
-     · culled / far-side triangles are re-sampled from the mirrored side
-       of the face (symmetry inpainting), never stretched
+   Anti-artifact design goals (not a guarantee of photorealistic turns)
+     · stable far-to-near depth-key sorting and back-face handling reduce
+       paint-order smearing
+     · culled / far-side triangles re-sample a mirrored source patch; this
+       mitigates silhouette collapse but cannot reconstruct unseen details
      · every clip goes through FM.polyOK and every wide fill is clipped
        to a computed bounding box -> a degenerate clip can never flash
        the whole canvas
-     · no getImageData in the frame loop and no ctx.filter churn
+     · no getImageData in the frame loop; blur filters are local to small feature passes
      · the shell is composed on an offscreen layer that is blitted once,
        so a frame is never shown half-finished
      · every feature pass runs every frame, gated by smooth envelopes
@@ -212,7 +212,7 @@
       order: new Int32Array(list.length / 3),
       dkey: new Float32Array(list.length / 3),
       tmp: new Int32Array(list.length / 3),
-      bins: new Int32Array(1025),
+      mergeFallbacks: 0, initialized: false,
       pad: o.pad, cull: o.cull, mirror: o.mirror !== false
     });
     S.triA = mkPass(spec.mesh.base, S.normals, { pad: 0.9, cull: -0.02, mirror: true });
@@ -238,7 +238,8 @@
       if (delta) { C[i][0] += delta[i * 3]; C[i][1] += delta[i * 3 + 1]; C[i][2] += delta[i * 3 + 2]; }
     }
     const gapNow = Math.hypot(C[13][0] - C[14][0], C[13][1] - C[14][1]);
-    const want = clamp01(gapNow / (head.fh * 0.17)) * 0.36;
+    const expressionOpen = clamp01(st.jawOpen || 0);
+    const want = clamp01(Math.max(gapNow / (head.fh * 0.17), expressionOpen)) * 0.36;
     S.jaw = FM.slew(S.jaw, want, st.dt || 1 / 60, 3.2, 3.6);
     if (jawGain > 0.01) E.applyJaw(head, C, S.jaw * jawGain, S.axis);
     /* hair spring: chases the head, lags, capped */
@@ -341,11 +342,16 @@
     const p = S.proj;
     /* Depth key + temporally coherent ordering.  Start from last frame's
        order (insertion sort is O(m) when the pose barely moved), but if the
-       budget blows up during a fast turn, fall back to a linear bucket sort
-       so the order is *exact* — a leftover inversion is exactly the smeared
-       triangle the old build showed when you turned your head.           */
+       budget blows up during a fast turn, fall back to a stable merge sort.
+       Bucket order alone is insufficient: a small within-bucket inversion
+       is still enough to smear two overlapping face triangles.             */
     const list = pass.list, m = pass.n, dk = pass.dkey, order = pass.order;
-    if (o.resetOrder) for (let i = 0; i < m; i++) order[i] = i;
+    if (o.resetOrder || !pass.initialized) {
+      for (let i = 0; i < m; i++) order[i] = i;
+      pass.initialized = true;
+    }
+    const tmp = pass.tmp;
+    tmp.set(order.subarray(0, m)); // backup: insertion sort can stop mid-shift
     for (let t = 0; t < m; t++) {
       const i = t * 3;
       const a = list[i], b = list[i + 1], c = list[i + 2];
@@ -365,21 +371,21 @@
         order[j + 1] = v;
       }
       if (!exact) {
-        let lo = Infinity, hi = -Infinity;
-        for (let i = 0; i < m; i++) { const d = dk[i]; if (d < lo) lo = d; if (d > hi) hi = d; }
-        const bins = Math.min(1024, Math.max(8, m >> 1));
-        const span = hi - lo || 1e-6, scale = (bins - 1) / span;
-        const cnt = pass.bins, tmp = pass.tmp;
-        cnt.fill(0, 0, bins + 1);
-        for (let i = 0; i < m; i++) cnt[((dk[i] - lo) * scale) | 0]++;
-        let acc = 0;
-        for (let b = 0; b < bins; b++) { const c0 = cnt[b]; cnt[b] = acc; acc += c0; }
-        cnt[bins] = acc;
-        for (let i = 0; i < m; i++) {                 /* stable */
-          const b = ((dk[i] - lo) * scale) | 0;
-          tmp[cnt[b]++] = i;
+        pass.mergeFallbacks++;
+        /* Stable bottom-up merge sort: exact mean-depth-key order, O(m log m),
+           allocation-free via the pass-owned scratch array. Restore the
+           pre-sort order first: ties then keep their frame-to-frame order. */
+        order.set(tmp.subarray(0, m)); // recover the intact list after a partial insertion sort
+        for (let width = 1; width < m; width <<= 1) {
+          for (let left = 0; left < m; left += width << 1) {
+            const mid = Math.min(left + width, m), right = Math.min(left + (width << 1), m);
+            let i = left, j = mid, k = left;
+            while (i < mid && j < right) tmp[k++] = dk[order[i]] <= dk[order[j]] ? order[i++] : order[j++];
+            while (i < mid) tmp[k++] = order[i++];
+            while (j < right) tmp[k++] = order[j++];
+          }
+          order.set(tmp.subarray(0, m));
         }
-        order.set(tmp.subarray(0, m));
       }
     }
     const R = matFromQuat(st.q);
@@ -403,8 +409,8 @@
       let s1x = S2[b * 2], s1y = S2[b * 2 + 1];
       let s2x = S2[c * 2], s2y = S2[c * 2 + 1];
       if (behind && pass.mirror) {
-        /* symmetry inpainting: flipped sample, winding swapped so the
-           affine stays non-degenerate                                 */
+        /* Mirrored source approximation; swap the sample winding so the
+           affine remains non-degenerate. This is not learned inpainting. */
         s0x = 2 * midX - s0x;
         const tmpX = 2 * midX - s1x, tmpY = s1y;
         s1x = 2 * midX - s2x; s1y = s2y;
@@ -558,7 +564,7 @@
   function drawLips(S, ctx, D, mw, gap) {
     const O = E.LIPS_O.map(i => D[i]), In = E.LIPS_I.map(i => D[i]);
     const a = D[61], b = D[291];
-    if (!polyOK(O, 12) || !polyOK(In, 2.5)) return;
+    if (!polyOK(O, 12) || !polyOK(In, 2.5)) return false;
     const ang = Math.atan2(b.y - a.y, b.x - a.x);
     const dn = { x: -Math.sin(ang), y: Math.cos(ang) };
     const bb = bounds(O);
@@ -623,6 +629,7 @@
       }
       ctx.restore();
     }
+    return true;
   }
 
   /* ------------------------------------------------------- oral cavity */
@@ -649,8 +656,8 @@
     fr.org[1] + fr.ax[1] * u + fr.ay[1] * v + fr.az[1] * w,
     fr.org[2] + fr.ax[2] * u + fr.ay[2] * v + fr.az[2] * w
   ];
-  /* one rigid dental arch; returns the front-most tooth edge so the
-     tongue can be occluded by it                                        */
+  /* Draw one rigid dental arch and return visibility diagnostics. The
+     upper arch is painted after the tongue to restore front-to-back order. */
   function drawArch(S, ctx, proj3, fr, which, openAmt, cfg) {
     /* cfg = { vis, bright, warmth } straight from the sliders */
     const { TW, TH, DEPTH } = S.arches;
@@ -677,13 +684,14 @@
     }
     /* back teeth first: the arch reads as a curve */
     teeth.sort((a, b) => b.back - a.back);
-    const vis = clamp01(cfg.vis) * clamp01(openAmt * 2.6 + 0.10);
+    const vis = clamp01(cfg.vis) * clamp01(openAmt * 2.8);
     const bright = clamp01((0.62 + S.cache.lum * 0.5) * cfg.bright);
-    let frontY = null;
+    let frontY = null, drawnTeeth = 0, alphaSum = 0;
     for (const t of teeth) {
       const [A0, B0, C0, D0] = t.q;
       const alpha = clamp01(vis * (1 - Math.min(.5, t.back * 0.32)));
       if (alpha <= 0.02) continue;
+      alphaSum += alpha;
       const quad = () => {
         ctx.beginPath();
         ctx.moveTo(A0[0], A0[1]); ctx.lineTo(B0[0], B0[1]);
@@ -739,13 +747,14 @@
       ctx.stroke();
       ctx.restore();
       if (frontY === null || (isUp ? C0[1] > frontY : C0[1] < frontY)) frontY = C0[1];
+      drawnTeeth++;
     }
-    return frontY;
+    return { frontY, drawnTeeth, alphaSum };
   }
 
   function drawCavity(S, ctx, D, h) {
     const In = E.LIPS_I.map(i => D[i]);
-    if (!polyOK(In, 2.5)) return;
+    if (!polyOK(In, 2.5)) return false;
     const bb = bounds(In);
     ctx.save();
     ctx.beginPath();
@@ -767,13 +776,14 @@
     ctx.fillStyle = rg;
     ctx.fillRect(bb.x0 - 2, bb.y0 - 2, bb.w + 4, bb.h + 4);
     ctx.restore();
+    return true;
   }
 
   function drawTongue(S, ctx, fr, proj3, D, st, h) {
     const tg = clamp01(st.tongue);
-    if (tg < 0.02) return;
+    if (tg < 0.02) return false;
     const In = E.LIPS_I.map(i => D[i]);
-    if (!polyOK(In, 2.5)) return;
+    if (!polyOK(In, 2.5)) return false;
     const mw = fr.mw, gap = Math.max(0, st.gap || 0);
     const len = mw * (0.20 + 0.62 * tg) + gap * 0.30;
     const half = mw * (0.13 + 0.09 * tg);
@@ -786,9 +796,9 @@
       const z = -mw * 0.10 + t * len;
       sec.push({ l: proj3(mfp(fr, -w, v, z)), r: proj3(mfp(fr, w, v, z)), m: proj3(mfp(fr, 0, v, z)), t, w });
     }
-    if (!sec.every(s => isFinite(s.l[0]) && isFinite(s.r[0]) && isFinite(s.m[0]))) return;
+    if (!sec.every(s => isFinite(s.l[0]) && isFinite(s.r[0]) && isFinite(s.m[0]))) return false;
     const bb = bounds(sec.flatMap(s => [s.l, s.r]));
-    if (!(bb.w > 1 && bb.h > 1)) return;
+    if (!(bb.w > 1 && bb.h > 1)) return false;
     ctx.save();
     ctx.beginPath();
     In.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
@@ -843,6 +853,7 @@
     ctx.restore();
     ctx.globalAlpha = 1;
     ctx.restore();
+    return true;
   }
 
   function drawShading(S, ctx, D, st) {
@@ -883,10 +894,11 @@
     lc.drawImage(S.cache.plate || S.src, 0, 0);
     lc.imageSmoothingQuality = st.quality > 0 ? 'high' : 'low';
     drawShell(S, lc, st, S.triA, { resetOrder: S.frames < 3, padScale: st.quality > 1 ? 1.4 : 1 });
-    if (st.quality > 0) drawShell(S, lc, st, S.triB, { padScale: st.quality > 1 ? 1.4 : 1 });
+    if (st.quality > 0) drawShell(S, lc, st, S.triB, { resetOrder: S.frames < 3, padScale: st.quality > 1 ? 1.4 : 1 });
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, S.W, S.H);
     let mw = 0, gap = 0, h = S.openEnv;
+    const oral = { cavity: false, lowerTeeth: 0, lowerAlpha: 0, tongue: false, upperTeeth: 0, upperAlpha: 0, lips: false };
     if (st.origOnly) {
       ctx.drawImage(S.src, 0, 0);
     } else {
@@ -900,12 +912,14 @@
       h = S.openEnv;
       const zc = st.depthGain || 0;
       const proj3 = (p) => S.proj([p[0], p[1], p[2] * (1 + zc)]);
-      if (h > 0.004) drawCavity(S, ctx, D, h);
+      if (h > 0.004) oral.cavity = drawCavity(S, ctx, D, h) === true;
       const openAmt = clamp01(h * 1.1);
-      drawArch(S, ctx, proj3, fr, 'lo', openAmt, st);
-      drawTongue(S, ctx, fr, proj3, D, { tongue: st.tongue, gap: gap + mw * 0.035 }, h);
-      drawArch(S, ctx, proj3, fr, 'up', openAmt, st);
-      drawLips(S, ctx, D, mw, gap);
+      const lower = drawArch(S, ctx, proj3, fr, 'lo', openAmt, st);
+      oral.lowerTeeth = lower.drawnTeeth; oral.lowerAlpha = lower.alphaSum;
+      oral.tongue = drawTongue(S, ctx, fr, proj3, D, { tongue: st.tongue, gap: gap + mw * 0.035 }, h) === true;
+      const upper = drawArch(S, ctx, proj3, fr, 'up', openAmt, st);
+      oral.upperTeeth = upper.drawnTeeth; oral.upperAlpha = upper.alphaSum;
+      oral.lips = drawLips(S, ctx, D, mw, gap) === true;
       drawIris(S, ctx, 0, D, st.gaze[0], st.gazeGain);
       drawIris(S, ctx, 1, D, st.gaze[1], st.gazeGain);
       drawEyelid(S, ctx, 'L', st.lid[0], D);
@@ -948,7 +962,7 @@
       ctx.stroke();
       ctx.restore();
     }
-    const dbg = { tris: S.stats.tris, culled: S.stats.culled, mouth: { mw, gap, h }, jaw: S.jaw };
+    const dbg = { tris: S.stats.tris, culled: S.stats.culled, mouth: { mw, gap, h, ...oral }, jaw: S.jaw };
     S.lastDebug = dbg;
     return dbg;
   }

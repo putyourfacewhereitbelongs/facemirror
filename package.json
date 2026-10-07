@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "FaceMirror: webcam-driven 3D puppet for a still photo (MediaPipe 478-point mesh, rigid head pose, procedural oral cavity).",
+  "description": "FaceMirror: webcam-driven 2.5D portrait puppet (MediaPipe 478-point mesh, rigid head pose, procedural oral cavity).",
   "scripts": {
     "build": "node tools/build.mjs",
     "check": "node tools/build.mjs --check",

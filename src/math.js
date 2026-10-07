@@ -38,7 +38,11 @@
   };
   const sign = v => (v < 0 ? -1 : 1);
   const fin = v => Number.isFinite(v);
-  const fin2 = p => !!p && fin(p[0]) && fin(p[1]);
+  /* Geometry consumers use both tuple points [x,y] and renderer points
+     {x,y}; normalize the latter at the boundary instead of silently
+     rejecting every overlay polygon. Typed arrays stay tuple-compatible. */
+  const xy2 = p => p && p.x !== undefined ? [p.x, p.y] : p;
+  const fin2 = p => { const q = xy2(p); return !!q && fin(q[0]) && fin(q[1]); };
   const fin3 = p => !!p && fin(p[0]) && fin(p[1]) && fin(p[2]);
 
   /* slew limiter: approach a target at a bounded rate (units / second).
@@ -461,7 +465,7 @@
   function polyArea(pts) {
     let a = 0;
     for (let i = 0, n = pts.length; i < n; i++) {
-      const p = pts[i], q = pts[(i + 1) % n];
+      const p = xy2(pts[i]), q = xy2(pts[(i + 1) % n]);
       a += p[0] * q[1] - q[0] * p[1];
     }
     return a / 2;
@@ -473,7 +477,7 @@
     if (!pts || pts.length < 3) return false;
     let area = 0, ok = true;
     for (let i = 0, n = pts.length; i < n; i++) {
-      const p = pts[i], q = pts[(i + 1) % n];
+      const p = xy2(pts[i]), q = xy2(pts[(i + 1) % n]);
       if (!fin2(p) || !fin2(q)) { ok = false; break; }
       area += p[0] * q[1] - q[0] * p[1];
     }
@@ -481,7 +485,8 @@
   }
   function bounds(pts) {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const p of pts) {
+    for (const raw of pts) {
+      const p = xy2(raw);
       if (!fin2(p)) continue;
       if (p[0] < x0) x0 = p[0];
       if (p[1] < y0) y0 = p[1];

@@ -21,21 +21,21 @@
 <body id="back">
 <main>
   <h1>Face<em>Mirror</em></h1>
-  <p>A still photo turned into a live 3D puppet. Everything runs in the page: MediaPipe Tasks Vision for the 478-point
-  face mesh, a weighted Kabsch rigid fit for head pose, a painter-sorted triangle shell for the warp, and procedural
-  dental arches with a real mandible for the mouth interior.</p>
+  <p>A still photo turned into a live 2.5D puppet. In-browser MediaPipe Tasks Vision finds the 478-point face mesh;
+  a weighted Kabsch fit drives head pose, while a painter-sorted triangle shell warps the source photo. The mouth uses
+  a rigid jaw with procedural dental arches and tongue (not a neural portrait generator).</p>
   <a class="card" href="puppet.html">
     <b>Trill Face Puppet →</b><br>
-    Webcam-driven photo puppet: perspective head turn with symmetry-inpainted far side, drag-to-sculpt landmarks,
-    click-to-sculpt Smile / Frown / Mouth O, rigid teeth, procedural tongue, mic lip-sync, PNG capture and WebM recording.
+    Webcam-driven photo puppet: perspective head turn with mirrored-source patches approximating the unseen far side,
+    drag-to-sculpt landmarks, click-to-sculpt Smile / Frown / Mouth O, procedural teeth and tongue, mic lip-sync, PNG capture and WebM recording.
   </a>
   <ul>
     <li>Start the webcam, then choose a photo (or snapshot yourself) — a chest-up photo also gets shoulder/arm tracking.</li>
     <li>Press <code>Set neutral pose</code> to re-zero your own face at any time.</li>
     <li>Minimize the webcam card to keep tracking while reclaiming screen space.</li>
   </ul>
-  <p style="font-size:13px">Served locally with <code>npm run dev</code>, or opened straight from disk as
-  <code>puppet.html</code>. The page needs network access to cdn.jsdelivr.net and storage.googleapis.com for the models.</p>
+  <p style="font-size:13px">For webcam access, serve with <code>npm run dev</code> or use HTTPS; opening the file directly may restrict camera APIs.
+  The page also needs network access to cdn.jsdelivr.net and storage.googleapis.com for MediaPipe and its models.</p>
 </main>
 </body>
 </html>

@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Trill Face Puppet · 3D head turn, rigid teeth, audio visemes</title>
-<meta name="description" content="Drive a still photograph from a webcam face mesh: perspective head rotation, symmetry-inpainted far side, painter-sorted shell warping, rigid dental arches, procedural tongue, audio visemes, PNG capture and WebM recording." />
+<meta name="description" content="Drive a still photograph from a webcam face mesh: perspective head rotation, mirrored-source far-side approximation, painter-sorted shell warping, procedural dental arches and tongue, audio visemes, PNG capture and WebM recording." />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🎭</text></svg>" />
 <style>
 :root{--bg:#0d0f14;--card:#161a22;--card2:#1b202a;--fg:#e8eaf0;--mut:#8b93a7;--acc:#5eead4;--acc2:#f472b6;--line:#272c38}
@@ -55,18 +55,18 @@ details[open]>summary::before{content:"▾"}
 <a class="backlink" href="index.html#back" id="contLink">◀ Back to FaceMirror · Continue ▶</a>
 <h1>Trill <em>Face Puppet</em></h1>
 <p class="sub">
-  A still photo becomes a closed 3D shell: 478 landmarks lifted into a canonical head space, three hair rings and a pinned
-  frame welded around them. Your webcam's face mesh drives it with a weighted Kabsch rigid fit — pose is separated from
-  expression, so a smile stays on the face while the head turns, the far side is filled by symmetry inpainting instead of
-  stretching, and the oral cavity is rebuilt every frame from a rigid mandible with real tooth proportions and a tongue
-  that has a groove, papillae and a wet highlight. Drag any dot to sculpt; click the face to apply Smile, Frown or Mouth O.
+  A still photo becomes a 2.5D facial shell: 478 landmarks lifted into canonical head space, three hair rings and a pinned
+  frame around them. Your webcam face mesh drives it with a weighted Kabsch fit — pose is separated from expression so a
+  smile stays on the face while the head turns. The unseen far side is approximated from mirrored photo patches rather
+  than generated; the oral cavity uses a rigid jaw, procedural dental arches and a textured tongue. Drag a dot to sculpt,
+  or select Smile, Frown or Mouth O and click the face.
 </p>
 
 <div class="bar">
   <button id="camBtn" class="primary" disabled>Start webcam</button>
   <label class="btn">Choose image…<input id="file" type="file" accept="image/*" hidden></label>
-  <button id="snapBtn" disabled>Snapshot as image</button>
-  <button id="photoBtn" disabled>Save rendered photo</button>
+  <button id="snapBtn" title="Use a mirrored webcam snapshot as the source portrait" disabled>Use webcam snapshot</button>
+  <button id="photoBtn" title="Download the current rendered puppet frame as a PNG" disabled>📷 Save rendered photo</button>
   <button id="recordBtn" disabled>Record video</button>
   <button id="micBtn">Mic lip-sync</button>
   <button id="calBtn" disabled>Set neutral pose</button>
@@ -206,7 +206,11 @@ details[open]>summary::before{content:"▾"}
   };
   const sign = v => (v < 0 ? -1 : 1);
   const fin = v => Number.isFinite(v);
-  const fin2 = p => !!p && fin(p[0]) && fin(p[1]);
+  /* Geometry consumers use both tuple points [x,y] and renderer points
+     {x,y}; normalize the latter at the boundary instead of silently
+     rejecting every overlay polygon. Typed arrays stay tuple-compatible. */
+  const xy2 = p => p && p.x !== undefined ? [p.x, p.y] : p;
+  const fin2 = p => { const q = xy2(p); return !!q && fin(q[0]) && fin(q[1]); };
   const fin3 = p => !!p && fin(p[0]) && fin(p[1]) && fin(p[2]);
 
   /* slew limiter: approach a target at a bounded rate (units / second).
@@ -629,7 +633,7 @@ details[open]>summary::before{content:"▾"}
   function polyArea(pts) {
     let a = 0;
     for (let i = 0, n = pts.length; i < n; i++) {
-      const p = pts[i], q = pts[(i + 1) % n];
+      const p = xy2(pts[i]), q = xy2(pts[(i + 1) % n]);
       a += p[0] * q[1] - q[0] * p[1];
     }
     return a / 2;
@@ -641,7 +645,7 @@ details[open]>summary::before{content:"▾"}
     if (!pts || pts.length < 3) return false;
     let area = 0, ok = true;
     for (let i = 0, n = pts.length; i < n; i++) {
-      const p = pts[i], q = pts[(i + 1) % n];
+      const p = xy2(pts[i]), q = xy2(pts[(i + 1) % n]);
       if (!fin2(p) || !fin2(q)) { ok = false; break; }
       area += p[0] * q[1] - q[0] * p[1];
     }
@@ -649,7 +653,8 @@ details[open]>summary::before{content:"▾"}
   }
   function bounds(pts) {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const p of pts) {
+    for (const raw of pts) {
+      const p = xy2(raw);
       if (!fin2(p)) continue;
       if (p[0] < x0) x0 = p[0];
       if (p[1] < y0) y0 = p[1];
@@ -1146,20 +1151,26 @@ details[open]>summary::before{content:"▾"}
     const zc = (head.P[234][2] + head.P[454][2]) / 2 - head.fw * 0.18;
     return { p: [(a[0] + b[0]) / 2, y, zc], dir: v3.norm([b[0] - a[0], (b[1] - a[1]) * 0.35, (b[2] - a[2]) * 0.9]) };
   }
-  const jawWeight = i => {
+  const jawWeight = (i, head) => {
     if (i >= 468) return 0;
-    if (LIPS_I.includes(i) || LIPS_O.includes(i) || UP_LIP.includes(i) || LO_LIP.includes(i)) return 0.55;
+    const upper = UP_LIP.includes(i), lower = LO_LIP.includes(i);
+    if (upper || lower || LIPS_O.includes(i) || LIPS_I.includes(i)) {
+      if (upper && lower) return 0.42;               // mouth corners bridge both lips
+      if (upper) return 0.06;                        // maxilla / upper lip stays nearly rigid
+      if (lower) return 0.94;                        // lower lip follows the mandible
+      const midY = (head.P[13][1] + head.P[14][1]) * 0.5;
+      return clamp(0.5 + (head.P[i][1] - midY) / (head.fh * 0.02) * 0.45, 0.05, 0.95);
+    }
     if (i === 152 || i === 148 || i === 176 || i === 149 || i === 150 || i === 136 || i === 377 || i === 400 ||
         i === 378 || i === 379 || i === 365 || i === 397 || i === 288 || i === 361 || i === 323 || i === 454 ||
         i === 17 || i === 0 || i === 18 || i === 200 || i === 199 || i === 175) return 1;
-    if (i === 14 || i === 13 || i === 87 || i === 317 || i === 84 || i === 314 || i === 18) return 1;
     return 0.15;
   };
   function applyJaw(head, pts, angle, axis) {
     if (Math.abs(angle) < 1e-4) return;
     const R = m3.fromAxisAngle(axis.dir, angle);
     for (let i = 0; i < 478; i++) {
-      const w = jawWeight(i);
+      const w = jawWeight(i, head);
       if (w <= 0) continue;
       const rel = v3.sub(head.P[i], axis.p);
       const rot = m3.mv(R, rel);
@@ -1406,15 +1417,15 @@ details[open]>summary::before{content:"▾"}
    centre, weak-perspective projected and painted far -> near as
    per-triangle affines.
 
-   Why it does not flash, smear or stretch
-     · painter's algorithm + back-face culling: far surface can never
-       paint over near surface
-     · culled / far-side triangles are re-sampled from the mirrored side
-       of the face (symmetry inpainting), never stretched
+   Anti-artifact design goals (not a guarantee of photorealistic turns)
+     · stable far-to-near depth-key sorting and back-face handling reduce
+       paint-order smearing
+     · culled / far-side triangles re-sample a mirrored source patch; this
+       mitigates silhouette collapse but cannot reconstruct unseen details
      · every clip goes through FM.polyOK and every wide fill is clipped
        to a computed bounding box -> a degenerate clip can never flash
        the whole canvas
-     · no getImageData in the frame loop and no ctx.filter churn
+     · no getImageData in the frame loop; blur filters are local to small feature passes
      · the shell is composed on an offscreen layer that is blitted once,
        so a frame is never shown half-finished
      · every feature pass runs every frame, gated by smooth envelopes
@@ -1613,7 +1624,7 @@ details[open]>summary::before{content:"▾"}
       order: new Int32Array(list.length / 3),
       dkey: new Float32Array(list.length / 3),
       tmp: new Int32Array(list.length / 3),
-      bins: new Int32Array(1025),
+      mergeFallbacks: 0, initialized: false,
       pad: o.pad, cull: o.cull, mirror: o.mirror !== false
     });
     S.triA = mkPass(spec.mesh.base, S.normals, { pad: 0.9, cull: -0.02, mirror: true });
@@ -1639,7 +1650,8 @@ details[open]>summary::before{content:"▾"}
       if (delta) { C[i][0] += delta[i * 3]; C[i][1] += delta[i * 3 + 1]; C[i][2] += delta[i * 3 + 2]; }
     }
     const gapNow = Math.hypot(C[13][0] - C[14][0], C[13][1] - C[14][1]);
-    const want = clamp01(gapNow / (head.fh * 0.17)) * 0.36;
+    const expressionOpen = clamp01(st.jawOpen || 0);
+    const want = clamp01(Math.max(gapNow / (head.fh * 0.17), expressionOpen)) * 0.36;
     S.jaw = FM.slew(S.jaw, want, st.dt || 1 / 60, 3.2, 3.6);
     if (jawGain > 0.01) E.applyJaw(head, C, S.jaw * jawGain, S.axis);
     /* hair spring: chases the head, lags, capped */
@@ -1742,11 +1754,16 @@ details[open]>summary::before{content:"▾"}
     const p = S.proj;
     /* Depth key + temporally coherent ordering.  Start from last frame's
        order (insertion sort is O(m) when the pose barely moved), but if the
-       budget blows up during a fast turn, fall back to a linear bucket sort
-       so the order is *exact* — a leftover inversion is exactly the smeared
-       triangle the old build showed when you turned your head.           */
+       budget blows up during a fast turn, fall back to a stable merge sort.
+       Bucket order alone is insufficient: a small within-bucket inversion
+       is still enough to smear two overlapping face triangles.             */
     const list = pass.list, m = pass.n, dk = pass.dkey, order = pass.order;
-    if (o.resetOrder) for (let i = 0; i < m; i++) order[i] = i;
+    if (o.resetOrder || !pass.initialized) {
+      for (let i = 0; i < m; i++) order[i] = i;
+      pass.initialized = true;
+    }
+    const tmp = pass.tmp;
+    tmp.set(order.subarray(0, m)); // backup: insertion sort can stop mid-shift
     for (let t = 0; t < m; t++) {
       const i = t * 3;
       const a = list[i], b = list[i + 1], c = list[i + 2];
@@ -1766,21 +1783,21 @@ details[open]>summary::before{content:"▾"}
         order[j + 1] = v;
       }
       if (!exact) {
-        let lo = Infinity, hi = -Infinity;
-        for (let i = 0; i < m; i++) { const d = dk[i]; if (d < lo) lo = d; if (d > hi) hi = d; }
-        const bins = Math.min(1024, Math.max(8, m >> 1));
-        const span = hi - lo || 1e-6, scale = (bins - 1) / span;
-        const cnt = pass.bins, tmp = pass.tmp;
-        cnt.fill(0, 0, bins + 1);
-        for (let i = 0; i < m; i++) cnt[((dk[i] - lo) * scale) | 0]++;
-        let acc = 0;
-        for (let b = 0; b < bins; b++) { const c0 = cnt[b]; cnt[b] = acc; acc += c0; }
-        cnt[bins] = acc;
-        for (let i = 0; i < m; i++) {                 /* stable */
-          const b = ((dk[i] - lo) * scale) | 0;
-          tmp[cnt[b]++] = i;
+        pass.mergeFallbacks++;
+        /* Stable bottom-up merge sort: exact mean-depth-key order, O(m log m),
+           allocation-free via the pass-owned scratch array. Restore the
+           pre-sort order first: ties then keep their frame-to-frame order. */
+        order.set(tmp.subarray(0, m)); // recover the intact list after a partial insertion sort
+        for (let width = 1; width < m; width <<= 1) {
+          for (let left = 0; left < m; left += width << 1) {
+            const mid = Math.min(left + width, m), right = Math.min(left + (width << 1), m);
+            let i = left, j = mid, k = left;
+            while (i < mid && j < right) tmp[k++] = dk[order[i]] <= dk[order[j]] ? order[i++] : order[j++];
+            while (i < mid) tmp[k++] = order[i++];
+            while (j < right) tmp[k++] = order[j++];
+          }
+          order.set(tmp.subarray(0, m));
         }
-        order.set(tmp.subarray(0, m));
       }
     }
     const R = matFromQuat(st.q);
@@ -1804,8 +1821,8 @@ details[open]>summary::before{content:"▾"}
       let s1x = S2[b * 2], s1y = S2[b * 2 + 1];
       let s2x = S2[c * 2], s2y = S2[c * 2 + 1];
       if (behind && pass.mirror) {
-        /* symmetry inpainting: flipped sample, winding swapped so the
-           affine stays non-degenerate                                 */
+        /* Mirrored source approximation; swap the sample winding so the
+           affine remains non-degenerate. This is not learned inpainting. */
         s0x = 2 * midX - s0x;
         const tmpX = 2 * midX - s1x, tmpY = s1y;
         s1x = 2 * midX - s2x; s1y = s2y;
@@ -1959,7 +1976,7 @@ details[open]>summary::before{content:"▾"}
   function drawLips(S, ctx, D, mw, gap) {
     const O = E.LIPS_O.map(i => D[i]), In = E.LIPS_I.map(i => D[i]);
     const a = D[61], b = D[291];
-    if (!polyOK(O, 12) || !polyOK(In, 2.5)) return;
+    if (!polyOK(O, 12) || !polyOK(In, 2.5)) return false;
     const ang = Math.atan2(b.y - a.y, b.x - a.x);
     const dn = { x: -Math.sin(ang), y: Math.cos(ang) };
     const bb = bounds(O);
@@ -2024,6 +2041,7 @@ details[open]>summary::before{content:"▾"}
       }
       ctx.restore();
     }
+    return true;
   }
 
   /* ------------------------------------------------------- oral cavity */
@@ -2050,8 +2068,8 @@ details[open]>summary::before{content:"▾"}
     fr.org[1] + fr.ax[1] * u + fr.ay[1] * v + fr.az[1] * w,
     fr.org[2] + fr.ax[2] * u + fr.ay[2] * v + fr.az[2] * w
   ];
-  /* one rigid dental arch; returns the front-most tooth edge so the
-     tongue can be occluded by it                                        */
+  /* Draw one rigid dental arch and return visibility diagnostics. The
+     upper arch is painted after the tongue to restore front-to-back order. */
   function drawArch(S, ctx, proj3, fr, which, openAmt, cfg) {
     /* cfg = { vis, bright, warmth } straight from the sliders */
     const { TW, TH, DEPTH } = S.arches;
@@ -2078,13 +2096,14 @@ details[open]>summary::before{content:"▾"}
     }
     /* back teeth first: the arch reads as a curve */
     teeth.sort((a, b) => b.back - a.back);
-    const vis = clamp01(cfg.vis) * clamp01(openAmt * 2.6 + 0.10);
+    const vis = clamp01(cfg.vis) * clamp01(openAmt * 2.8);
     const bright = clamp01((0.62 + S.cache.lum * 0.5) * cfg.bright);
-    let frontY = null;
+    let frontY = null, drawnTeeth = 0, alphaSum = 0;
     for (const t of teeth) {
       const [A0, B0, C0, D0] = t.q;
       const alpha = clamp01(vis * (1 - Math.min(.5, t.back * 0.32)));
       if (alpha <= 0.02) continue;
+      alphaSum += alpha;
       const quad = () => {
         ctx.beginPath();
         ctx.moveTo(A0[0], A0[1]); ctx.lineTo(B0[0], B0[1]);
@@ -2140,13 +2159,14 @@ details[open]>summary::before{content:"▾"}
       ctx.stroke();
       ctx.restore();
       if (frontY === null || (isUp ? C0[1] > frontY : C0[1] < frontY)) frontY = C0[1];
+      drawnTeeth++;
     }
-    return frontY;
+    return { frontY, drawnTeeth, alphaSum };
   }
 
   function drawCavity(S, ctx, D, h) {
     const In = E.LIPS_I.map(i => D[i]);
-    if (!polyOK(In, 2.5)) return;
+    if (!polyOK(In, 2.5)) return false;
     const bb = bounds(In);
     ctx.save();
     ctx.beginPath();
@@ -2168,13 +2188,14 @@ details[open]>summary::before{content:"▾"}
     ctx.fillStyle = rg;
     ctx.fillRect(bb.x0 - 2, bb.y0 - 2, bb.w + 4, bb.h + 4);
     ctx.restore();
+    return true;
   }
 
   function drawTongue(S, ctx, fr, proj3, D, st, h) {
     const tg = clamp01(st.tongue);
-    if (tg < 0.02) return;
+    if (tg < 0.02) return false;
     const In = E.LIPS_I.map(i => D[i]);
-    if (!polyOK(In, 2.5)) return;
+    if (!polyOK(In, 2.5)) return false;
     const mw = fr.mw, gap = Math.max(0, st.gap || 0);
     const len = mw * (0.20 + 0.62 * tg) + gap * 0.30;
     const half = mw * (0.13 + 0.09 * tg);
@@ -2187,9 +2208,9 @@ details[open]>summary::before{content:"▾"}
       const z = -mw * 0.10 + t * len;
       sec.push({ l: proj3(mfp(fr, -w, v, z)), r: proj3(mfp(fr, w, v, z)), m: proj3(mfp(fr, 0, v, z)), t, w });
     }
-    if (!sec.every(s => isFinite(s.l[0]) && isFinite(s.r[0]) && isFinite(s.m[0]))) return;
+    if (!sec.every(s => isFinite(s.l[0]) && isFinite(s.r[0]) && isFinite(s.m[0]))) return false;
     const bb = bounds(sec.flatMap(s => [s.l, s.r]));
-    if (!(bb.w > 1 && bb.h > 1)) return;
+    if (!(bb.w > 1 && bb.h > 1)) return false;
     ctx.save();
     ctx.beginPath();
     In.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
@@ -2244,6 +2265,7 @@ details[open]>summary::before{content:"▾"}
     ctx.restore();
     ctx.globalAlpha = 1;
     ctx.restore();
+    return true;
   }
 
   function drawShading(S, ctx, D, st) {
@@ -2284,10 +2306,11 @@ details[open]>summary::before{content:"▾"}
     lc.drawImage(S.cache.plate || S.src, 0, 0);
     lc.imageSmoothingQuality = st.quality > 0 ? 'high' : 'low';
     drawShell(S, lc, st, S.triA, { resetOrder: S.frames < 3, padScale: st.quality > 1 ? 1.4 : 1 });
-    if (st.quality > 0) drawShell(S, lc, st, S.triB, { padScale: st.quality > 1 ? 1.4 : 1 });
+    if (st.quality > 0) drawShell(S, lc, st, S.triB, { resetOrder: S.frames < 3, padScale: st.quality > 1 ? 1.4 : 1 });
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, S.W, S.H);
     let mw = 0, gap = 0, h = S.openEnv;
+    const oral = { cavity: false, lowerTeeth: 0, lowerAlpha: 0, tongue: false, upperTeeth: 0, upperAlpha: 0, lips: false };
     if (st.origOnly) {
       ctx.drawImage(S.src, 0, 0);
     } else {
@@ -2301,12 +2324,14 @@ details[open]>summary::before{content:"▾"}
       h = S.openEnv;
       const zc = st.depthGain || 0;
       const proj3 = (p) => S.proj([p[0], p[1], p[2] * (1 + zc)]);
-      if (h > 0.004) drawCavity(S, ctx, D, h);
+      if (h > 0.004) oral.cavity = drawCavity(S, ctx, D, h) === true;
       const openAmt = clamp01(h * 1.1);
-      drawArch(S, ctx, proj3, fr, 'lo', openAmt, st);
-      drawTongue(S, ctx, fr, proj3, D, { tongue: st.tongue, gap: gap + mw * 0.035 }, h);
-      drawArch(S, ctx, proj3, fr, 'up', openAmt, st);
-      drawLips(S, ctx, D, mw, gap);
+      const lower = drawArch(S, ctx, proj3, fr, 'lo', openAmt, st);
+      oral.lowerTeeth = lower.drawnTeeth; oral.lowerAlpha = lower.alphaSum;
+      oral.tongue = drawTongue(S, ctx, fr, proj3, D, { tongue: st.tongue, gap: gap + mw * 0.035 }, h) === true;
+      const upper = drawArch(S, ctx, proj3, fr, 'up', openAmt, st);
+      oral.upperTeeth = upper.drawnTeeth; oral.upperAlpha = upper.alphaSum;
+      oral.lips = drawLips(S, ctx, D, mw, gap) === true;
       drawIris(S, ctx, 0, D, st.gaze[0], st.gazeGain);
       drawIris(S, ctx, 1, D, st.gaze[1], st.gazeGain);
       drawEyelid(S, ctx, 'L', st.lid[0], D);
@@ -2349,7 +2374,7 @@ details[open]>summary::before{content:"▾"}
       ctx.stroke();
       ctx.restore();
     }
-    const dbg = { tris: S.stats.tris, culled: S.stats.culled, mouth: { mw, gap, h }, jaw: S.jaw };
+    const dbg = { tris: S.stats.tris, culled: S.stats.culled, mouth: { mw, gap, h, ...oral }, jaw: S.jaw };
     S.lastDebug = dbg;
     return dbg;
   }
@@ -2422,7 +2447,7 @@ details[open]>summary::before{content:"▾"}
     perf: { last: 0, dt: 1 / 60, fps: 0, n: 0, t0: 0, hud: 0, t: 0 },
     pose: { cur: null, neu: null, JI: null, tick: 0 },
     pointList: null, partIdx: null, p2: null,
-    lastFaceAt: -1e9, err: null, status: '', statusBase: '', rec: null, chunks: [], keyT: false,
+    lastFaceAt: -1e9, err: null, status: '', statusBase: '', rec: null, recStream: null, chunks: [], keyT: false,
     photoName: 'photo', idle: { next: 0, at: 0 }, crash: null
   };
 
@@ -2618,8 +2643,23 @@ details[open]>summary::before{content:"▾"}
   }
   function snapshotFromWebcam() {
     const vid = $('vid');
-    if (!A.camOn || !vid.videoWidth) { flashStatus('Start the webcam first.'); return; }
-    setPhotoFromElement(vid, vid.videoWidth, vid.videoHeight, 'webcam snapshot');
+    if (!A.camOn || !vid || !vid.videoWidth || !vid.videoHeight) { flashStatus('Start the webcam first.'); return; }
+    /* Tracking is performed on a horizontally mirrored camera frame.  Use
+       that same convention for the still source, otherwise neutral pose and
+       the snapshot have opposite handedness and yaw appears to pull the face
+       across the image.  Refresh the reusable tracking canvas at click time
+       so the captured photo is not one decoded frame behind. */
+    const W = vid.videoWidth, H = vid.videoHeight;
+    if (!A.cam || A.cam.width !== W || A.cam.height !== H) A.cam = RR.makeCanvas(W, H);
+    const ctx = A.cam.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    ctx.save();
+    ctx.setTransform(-1, 0, 0, 1, W, 0);
+    ctx.drawImage(vid, 0, 0, W, H);
+    ctx.restore();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    setPhotoFromElement(A.cam, W, H, 'webcam snapshot');
   }
   function neutralSet() {
     if (!A.tracker || !A.tracker.have) { flashStatus('No tracked face yet — look at the camera, then press it again.'); return; }
@@ -2688,6 +2728,7 @@ details[open]>summary::before{content:"▾"}
     for (const k in L) L[k] = 0;
     if (live) {
       const smile = (bv('mouthSmileLeft') + bv('mouthSmileRight')) / 2;
+      L.j = clamp01((bv('jawOpen') - 0.04) / 0.68);
       L.sL = L.sR = clamp01(smile * 1.2);
       L.fr = clamp01((bv('mouthFrownLeft') + bv('mouthFrownRight')) / 2 * 1.2);
       L.bu = clamp01(bv('browInnerUp') * 0.7 + (bv('browOuterUpLeft') + bv('browOuterUpRight')) / 2 * 0.6);
@@ -2739,7 +2780,10 @@ details[open]>summary::before{content:"▾"}
     for (const k of E.ACTIONS) {
       let v = 0;
       if (presetActs && presetActs[k]) v = nz(presetActs[k]) * amt;
-      if (live && A.live[k]) v = Math.max(v, nz(A.live[k]) * (A.preset === 'live' ? 0.35 : 0.5));
+      if (live && A.live[k]) {
+        const gain = k === 'j' ? 0.8 : (A.preset === 'live' ? 0.35 : 0.5);
+        v = Math.max(v, nz(A.live[k]) * gain);
+      }
       A.target[k] = v;
       A.actions[k] = slew(nz(A.actions[k]), v, dt, 2.2, 1.9);
     }
@@ -2809,7 +2853,7 @@ details[open]>summary::before{content:"▾"}
       if (!A.crash) { A.crash = e; console.error(e); setStatus('Render error: ' + e.message); }
     }
   }
-  function step(now) {
+  function step(now, renderFrame = true) {
     const t = now || (root.performance ? performance.now() : Date.now());
     const P = A.perf;
     if (!P.last) P.last = t;
@@ -2840,7 +2884,8 @@ details[open]>summary::before{content:"▾"}
         focal: num('focal', 3.1),
         depthGain: num('dp', 1.3) - 1,
         deltaCanonical: composeDelta(P.dt),
-        jawMeshGain: trust > 0.25 ? 0.35 : 1,
+        jawOpen: clamp01(nz(A.actions.j) * 1.4),
+        jawMeshGain: 1,
         limits: chk('lim'), shade: num('fs', 0.35), hairGain: num('hs', 0.6),
         gaze: A.gaze, gazeGain: num('gg', 1.9), lid: A.lid, tongue: A.tongue,
         vis: num('tv', 0.4), bright: num('tb', 1.15), warmth: num('tw', 0),
@@ -2848,8 +2893,14 @@ details[open]>summary::before{content:"▾"}
         points: A.pointList, dragIndex: A.drag >= 0 ? A.drag : -1, hoverIndex: A.hover >= 0 ? A.hover : -1,
         bodyAt: (A.pose.JI && A.pose.cur && A.pose.neu) ? bodyAt : null
       };
-      RR.sessionFrame(A.ses, st);
-      if (P.t - P.hud > 0.25) { P.hud = P.t; updateHud(A.ses.lastDebug || {}); }
+      if (renderFrame) {
+        RR.sessionFrame(A.ses, st);
+        if (P.t - P.hud > 0.25) { P.hud = P.t; updateHud(A.ses.lastDebug || {}); }
+      } else {
+        /* Headless harnesses can exercise the pose/expression/deformation
+           chain without issuing thousands of Canvas2D triangle calls. */
+        RR.deform(A.ses, st);
+      }
     } else if (A.src) {
       const ctx = $('puppet').getContext('2d');
       ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -2972,10 +3023,26 @@ details[open]>summary::before{content:"▾"}
       A.sculpt[partner * 2 + 1] = d[1];
     }
   }
-  /* click-to-sculpt: a controlled local edit in canonical space, so the
-     shape stays on the face while the head turns                      */
+  function insideFace(screen) {
+    if (!A.ses || !screen || !Number.isFinite(screen.x) || !Number.isFinite(screen.y)) return false;
+    const poly = E.CONTOUR.map(i => {
+      const k = i * 2;
+      return A.ses.frames > 0
+        ? { x: A.ses.DST[k], y: A.ses.DST[k + 1] }
+        : { x: A.ses.S2[k], y: A.ses.S2[k + 1] };
+    });
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const a = poly[i], b = poly[j];
+      const crosses = (a.y > screen.y) !== (b.y > screen.y);
+      if (crosses && screen.x < (b.x - a.x) * (screen.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+    }
+    return inside;
+  }
+  /* click-to-sculpt: only accept a real hit on the projected face contour;
+     edits remain in canonical space, so the shape stays on the face as it turns. */
   function sculptShape(kind, screen) {
-    if (!A.head) return false;
+    if (!A.head || !insideFace(screen)) return false;
     const u = A.head.fw * 0.1;
     const move = (i, dx, dy) => {
       A.sculpt[i * 2] += dx;
@@ -3114,33 +3181,60 @@ details[open]>summary::before{content:"▾"}
     a.click();
     flashStatus('Rendered frame saved as a PNG.');
   }
+  function stopCapturedVideoTracks(stream) {
+    /* captureStream() owns only the canvas video track.  Do not stop the
+       borrowed microphone audio tracks added below — mic lip-sync may still
+       be active for the next recording. */
+    const tracks = stream && (stream.getVideoTracks
+      ? stream.getVideoTracks()
+      : (stream.getTracks ? stream.getTracks().filter(t => t.kind === 'video') : []));
+    for (const tr of tracks || []) { try { tr.stop(); } catch (e) {} }
+  }
   function toggleRecording() {
     const btn = $('recordBtn'), pc = $('puppet');
-    if (A.rec) { A.rec.stop(); return; }
+    if (A.rec) { try { A.rec.stop(); } catch (e) { flashStatus('Could not stop the recording: ' + e.message); } return; }
     if (!pc || !pc.captureStream || !root.MediaRecorder) { flashStatus('This browser cannot record the canvas.'); return; }
-    const stream = pc.captureStream(30);
+    let stream;
+    try { stream = pc.captureStream(30); }
+    catch (e) { flashStatus('Could not capture the canvas: ' + e.message); return; }
+    if (!stream) { flashStatus('This browser cannot capture the canvas.'); return; }
     if (A.micOn && A.micStream) for (const tr of A.micStream.getAudioTracks()) { try { stream.addTrack(tr); } catch (e) {} }
+    A.recStream = stream;
     A.chunks = [];
     let rec = null;
     for (const type of ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp9', 'video/webm']) {
       try { rec = new root.MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: 8000000 }); break; } catch (e) {}
     }
-    if (!rec) { try { rec = new root.MediaRecorder(stream); } catch (e) { flashStatus('Recording is not supported here.'); return; } }
+    if (!rec) { try { rec = new root.MediaRecorder(stream); } catch (e) {
+      stopCapturedVideoTracks(stream); A.recStream = null;
+      flashStatus('Recording is not supported here.'); return;
+    } }
     A.rec = rec;
     rec.ondataavailable = e => { if (e.data && e.data.size) A.chunks.push(e.data); };
     rec.onstop = () => {
-      const blob = new Blob(A.chunks, { type: rec.mimeType || 'video/webm' });
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-      const a = document.createElement('a');
-      a.download = `trill-face-puppet-${stamp}.webm`;
-      a.href = URL.createObjectURL(blob);
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-      A.rec = null;
+      let saved = false;
+      try {
+        const blob = new Blob(A.chunks, { type: rec.mimeType || 'video/webm' });
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const a = document.createElement('a');
+        a.download = `trill-face-puppet-${stamp}.webm`;
+        a.href = URL.createObjectURL(blob);
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+        saved = true;
+      } catch (e) { flashStatus('The recording could not be saved: ' + e.message); }
+      stopCapturedVideoTracks(stream);
+      if (A.rec === rec) A.rec = null;
+      if (A.recStream === stream) A.recStream = null;
       if (btn) btn.textContent = 'Record video';
-      flashStatus('Recording saved.');
+      if (saved) flashStatus('Recording saved.');
     };
-    rec.start(250);
+    try { rec.start(250); }
+    catch (e) {
+      A.rec = null; A.recStream = null; stopCapturedVideoTracks(stream);
+      if (btn) btn.textContent = 'Record video';
+      flashStatus('Could not start recording: ' + e.message); return;
+    }
     if (btn) btn.textContent = 'Stop recording';
     flashStatus('Recording the rendered puppet…');
   }
@@ -3183,10 +3277,11 @@ details[open]>summary::before{content:"▾"}
       if (ok && !A.tracker.neutral) E.trackerSetNeutral(A.tracker, w, h);
       return ok;
     },
+    signals: readSignals,
     neutral: neutralSet,
-    frame: (t, dt) => {
+    frame: (t, dt, renderFrame = true) => {
       if (dt) A.perf.last = t - dt * 1000;
-      step(t);
+      step(t, renderFrame !== false);
       return {
         DST: A.ses.DST, depth: A.ses.depth, dbg: A.ses.lastDebug, out: A.outBuf,
         jaw: A.ses.jaw, q: A.tracker ? A.tracker.q : null, sculpt: A.sculpt,

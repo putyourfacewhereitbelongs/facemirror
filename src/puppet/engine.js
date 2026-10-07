@@ -425,20 +425,26 @@
     const zc = (head.P[234][2] + head.P[454][2]) / 2 - head.fw * 0.18;
     return { p: [(a[0] + b[0]) / 2, y, zc], dir: v3.norm([b[0] - a[0], (b[1] - a[1]) * 0.35, (b[2] - a[2]) * 0.9]) };
   }
-  const jawWeight = i => {
+  const jawWeight = (i, head) => {
     if (i >= 468) return 0;
-    if (LIPS_I.includes(i) || LIPS_O.includes(i) || UP_LIP.includes(i) || LO_LIP.includes(i)) return 0.55;
+    const upper = UP_LIP.includes(i), lower = LO_LIP.includes(i);
+    if (upper || lower || LIPS_O.includes(i) || LIPS_I.includes(i)) {
+      if (upper && lower) return 0.42;               // mouth corners bridge both lips
+      if (upper) return 0.06;                        // maxilla / upper lip stays nearly rigid
+      if (lower) return 0.94;                        // lower lip follows the mandible
+      const midY = (head.P[13][1] + head.P[14][1]) * 0.5;
+      return clamp(0.5 + (head.P[i][1] - midY) / (head.fh * 0.02) * 0.45, 0.05, 0.95);
+    }
     if (i === 152 || i === 148 || i === 176 || i === 149 || i === 150 || i === 136 || i === 377 || i === 400 ||
         i === 378 || i === 379 || i === 365 || i === 397 || i === 288 || i === 361 || i === 323 || i === 454 ||
         i === 17 || i === 0 || i === 18 || i === 200 || i === 199 || i === 175) return 1;
-    if (i === 14 || i === 13 || i === 87 || i === 317 || i === 84 || i === 314 || i === 18) return 1;
     return 0.15;
   };
   function applyJaw(head, pts, angle, axis) {
     if (Math.abs(angle) < 1e-4) return;
     const R = m3.fromAxisAngle(axis.dir, angle);
     for (let i = 0; i < 478; i++) {
-      const w = jawWeight(i);
+      const w = jawWeight(i, head);
       if (w <= 0) continue;
       const rel = v3.sub(head.P[i], axis.p);
       const rot = m3.mv(R, rel);

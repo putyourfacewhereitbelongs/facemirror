@@ -78,6 +78,7 @@ class Ctx {
   rect(x, y, w, h) { this.moveTo(x, y); this.lineTo(x + w, y); this.lineTo(x + w, y + h); this.lineTo(x, y + h); this.closePath(); }
   closePath() { if (this.sub.length) this.sub.push(this.sub[0].slice()); }
   arc(cx, cy, r) {
+    this.arcCount = (this.arcCount || 0) + 1;
     for (let i = 0; i <= 8; i++) {
       const a = i / 8 * Math.PI * 2;
       const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r;
@@ -95,6 +96,7 @@ class Ctx {
     this.cur = { ...this.cur, clip: box, degenerate };
     this.ops.push({ op: 'clip', args: [area], clip: box, degenerate });
     this.opCount = (this.opCount || 0) + 1;
+    this.totalOps = (this.totalOps || 0) + 1;
     if (this.ops.length > 4096) { this.ops.splice(0, this.ops.length - 4096); this.opDrops = (this.opDrops || 0) + 1; }
   }
   pathBBox() {
@@ -125,6 +127,7 @@ class Ctx {
     this.ops.push(rec);
     if (this.ops.length > 4096) { this.ops.splice(0, this.ops.length - 4096); this.opDrops = (this.opDrops || 0) + 1; }
     this.opCount = (this.opCount || 0) + 1;
+    this.totalOps = (this.totalOps || 0) + 1;
     /* THE flash detector: a fill covering the whole canvas while the
        active clip has no area is exactly what makes the old build blink */
     const w = this.W, h = this.H;
@@ -199,7 +202,7 @@ class Canvas {
     this._ctx.W = this.width; this._ctx.H = this.height;
     return this._ctx;
   }
-  toDataURL() { return 'data:image/png;base64,MOCK'; }
+  toDataURL() { this.toDataURLCalls = (this.toDataURLCalls || 0) + 1; return 'data:image/png;base64,MOCK'; }
   captureStream() { return null; }
   getBoundingClientRect() { return { left: 0, top: 0, width: this.width, height: this.height, right: this.width, bottom: this.height }; }
   addEventListener(k, f) { (this.listeners[k] = this.listeners[k] || []).push(f); }
@@ -245,7 +248,13 @@ class El {
       return c.tagName === tag.replace('button', 'BUTTON');
     });
   }
-  closest() { return this.parentElement; }
+  closest(sel) {
+    for (let node = this; node; node = node.parentElement) {
+      if (sel === 'button[data-sculpt]' && node.tagName === 'BUTTON' && node.dataset.sculpt !== undefined) return node;
+      if (sel === 'button[data-preset]' && node.tagName === 'BUTTON' && node.dataset.preset !== undefined) return node;
+    }
+    return null;
+  }
   setPointerCapture() {}
   releasePointerCapture() {}
   getBoundingClientRect() { return { left: 0, top: 0, width: this.clientWidth, height: this.clientWidth * 0.75, right: this.clientWidth, bottom: this.clientWidth * 0.75 }; }
@@ -255,6 +264,7 @@ class El {
 export function installMockDom(html, opts = {}) {
   const ids = parseHTMLIds(html);
   const byId = new Map();
+  const allCanvases = new Set();
   for (const [id, info] of ids) {
     const tag = info.tag.toLowerCase();
     if (tag === 'input' && info.attrs.type === 'range') {
@@ -268,6 +278,7 @@ export function installMockDom(html, opts = {}) {
     if (tag === 'canvas') {
       const c = new Canvas(parseInt(info.attrs.width, 10) || 640, parseInt(info.attrs.height, 10) || 480);
       c.id = id; c.classList = new El('canvas', {}).classList;
+      allCanvases.add(c);
       byId.set(id, c);
       continue;
     }
@@ -283,7 +294,12 @@ export function installMockDom(html, opts = {}) {
   const document = {
     readyState: 'complete',
     getElementById: id => byId.get(id) || null,
-    createElement: tag => (tag === 'canvas' ? new Canvas(300, 150) : new El(tag, {})),
+    createElement: tag => {
+      if (tag !== 'canvas') return new El(tag, {});
+      const c = new Canvas(300, 150);
+      allCanvases.add(c);
+      return c;
+    },
     querySelectorAll: () => [],
     addEventListener() {},
     body: new El('body', {}),
@@ -302,7 +318,7 @@ export function installMockDom(html, opts = {}) {
   };
   let harnessClock = 0;
   const setClock = v => { harnessClock = v; };
-  return { window: win, document, byId, setClock, ids, El, Canvas, Ctx };
+  return { window: win, document, byId, allCanvases, setClock, ids, El, Canvas, Ctx };
 }
 
 export { El, Canvas, Ctx };

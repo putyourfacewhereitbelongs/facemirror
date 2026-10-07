@@ -16,7 +16,7 @@ const ok = (name, cond, extra = '') => {
   else { fails++; console.log(`  FAIL ${name}${extra ? '  ' + extra : ''}`); }
 };
 const { m3, v3, kabsch, svd3, quatFromMat, matFromQuat, quatFromYPR, eulerFromQuat, oneEuro, oneEuroRun,
-        quatSlew, quatAngle, quatFollow, quatMul, quatConj, polyOK, splineClosed, slew, schmitt, softLimit,
+        quatSlew, quatAngle, quatFollow, quatMul, quatConj, polyOK, bounds, polyArea, splineClosed, slew, schmitt, softLimit,
         alphaFor, envelope } = FM;
 let seed = 12345;
 const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
@@ -188,6 +188,9 @@ console.log('\n── geometry guards ------------------------------------------
 ok('polyOK rejects empty / degenerate / non-finite clips',
    !polyOK([{ x: 0, y: 0 }]) && !polyOK([[0, 0], [0, 0], [0, 0]]) && !polyOK([[0, 0], [1, 1], [NaN, 2]]) && !polyOK([[0, 0], [1, 0]]));
 ok('polyOK accepts a real triangle', polyOK([[0, 0], [10, 0], [0, 10]]));
+const facePoly = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 0, y: 10 }];
+ok('polygon helpers accept renderer {x,y} points', polyOK(facePoly) && Math.abs(polyArea(facePoly) - 50) < 1e-9
+  && bounds(facePoly).w === 10 && bounds(facePoly).h === 10);
 const sp = splineClosed([[0, 0], [10, 0], [10, 10], [0, 10]], 48);
 ok('closed spline resamples without NaN', sp.length === 48 && sp.every(p => Number.isFinite(p[0]) && Number.isFinite(p[1])));
 

@@ -87,7 +87,7 @@ export function synthFace() {
   LIPS_I.forEach((idx, k) => {
     const angs = [Math.PI, 1.38 * Math.PI, 1.5 * Math.PI, 1.62 * Math.PI, 0, 0.38 * Math.PI, 0.5 * Math.PI, 0.62 * Math.PI];
     const a = angs[k];
-    const x = Math.cos(a) * 0.100, y = 0.285 + Math.sin(a) * 0.028;
+    const x = Math.cos(a) * 0.100, y = 0.285 + Math.sin(a) * 0.004;
     put(idx, x, y, surf(x, y) * 0.80);
   });
   for (const k in EXTRA) put(+k, EXTRA[k][0], EXTRA[k][1]);
