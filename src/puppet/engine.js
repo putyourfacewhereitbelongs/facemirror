@@ -273,7 +273,7 @@
   const zeroActions = () => { const o = {}; for (const k of ACTIONS) o[k] = 0; return o; };
   const PRESETS = {
     'Neutral': {},
-    'Smile': { sL: 0.55, sR: 0.55, sq: 0.10, ck: 0.25 },
+    'Smile': { sL: 0.55, sR: 0.55, j: 0.12, sq: 0.10, ck: 0.25 },
     'Big smile': { sL: 0.92, sR: 0.92, j: 0.16, sq: 0.30, bu: 0.12, ck: 0.55 },
     'Laugh': { sL: 1, sR: 1, j: 0.52, sq: 0.5, bu: 0.18, nz: 0.18, ck: 0.7 },
     'Smirk': { sR: 0.78, bu: 0.10, ck: 0.2 },

@@ -999,7 +999,7 @@ details[open]>summary::before{content:"▾"}
   const zeroActions = () => { const o = {}; for (const k of ACTIONS) o[k] = 0; return o; };
   const PRESETS = {
     'Neutral': {},
-    'Smile': { sL: 0.55, sR: 0.55, sq: 0.10, ck: 0.25 },
+    'Smile': { sL: 0.55, sR: 0.55, j: 0.12, sq: 0.10, ck: 0.25 },
     'Big smile': { sL: 0.92, sR: 0.92, j: 0.16, sq: 0.30, bu: 0.12, ck: 0.55 },
     'Laugh': { sL: 1, sR: 1, j: 0.52, sq: 0.5, bu: 0.18, nz: 0.18, ck: 0.7 },
     'Smirk': { sR: 0.78, bu: 0.10, ck: 0.2 },
@@ -1681,7 +1681,13 @@ details[open]>summary::before{content:"▾"}
     const expressionOpen = clamp01(st.jawOpen || 0);
     const want = clamp01(Math.max(gapNow / (head.fh * 0.17), expressionOpen)) * 0.36;
     S.jaw = FM.slew(S.jaw, want, st.dt || 1 / 60, 3.2, 3.6);
-    if (jawGain > 0.01) E.applyJaw(head, C, S.jaw * jawGain, S.axis);
+    if (jawGain > 0.01) {
+      /* Canvas y grows downward.  With the TMJ axis used here, a positive
+         mouth-open amount needs the negative right-hand rotation; the old
+         sign lifted the lower lip into the upper lip, so webcam jawOpen and
+         speaking presets appeared to keep the mouth closed. */
+      E.applyJaw(head, C, -S.jaw * jawGain, S.axis);
+    }
     /* hair spring: chases the head, lags, capped */
     const H = S.hair;
     const yaw = E.eulerYaw(st.q);
@@ -1836,6 +1842,18 @@ details[open]>summary::before{content:"▾"}
     for (let t = 0; t < m; t++) {
       const tri = order[t] * 3;
       const a = list[tri], b = list[tri + 1], c = list[tri + 2];
+      if (o.onlyChanged) {
+        const threshold = o.changeThreshold === undefined ? 0.18 : o.changeThreshold;
+        const moved = Math.max(
+          Math.hypot(DST[a * 2] - S2[a * 2], DST[a * 2 + 1] - S2[a * 2 + 1]),
+          Math.hypot(DST[b * 2] - S2[b * 2], DST[b * 2 + 1] - S2[b * 2 + 1]),
+          Math.hypot(DST[c * 2] - S2[c * 2], DST[c * 2 + 1] - S2[c * 2 + 1])
+        );
+        /* In a frontal expression frame the untouched photograph is already
+           the sharpest possible background.  Re-sample only triangles that
+           actually moved; repainting every identity triangle is a blur pass. */
+        if (!(moved > threshold)) continue;
+      }
       const nz = R[6] * pass.normals[tri] + R[7] * pass.normals[tri + 1] + R[8] * pass.normals[tri + 2];
       const behind = nz < pass.cull;
       const ax = DST[a * 2], ay = DST[a * 2 + 1];
@@ -2340,12 +2358,26 @@ details[open]>summary::before{content:"▾"}
     /* ---- compose the shell on the layer, then blit once ------------ */
     lc.setTransform(1, 0, 0, 1, 0, 0);
     lc.clearRect(0, 0, S.W, S.H);
-    lc.drawImage(S.cache.plate || S.src, 0, 0);
+    const q = st.q || [0, 0, 0, 1];
+    const qAngle = 2 * Math.acos(clamp(Math.abs(q[3]), 0, 1));
+    const frontal = qAngle < 0.020
+      && Math.abs(st.ox || 0) < 1.25
+      && Math.abs(st.oy || 0) < 1.25
+      && Math.abs((st.scale === undefined ? 1 : st.scale) - 1) < 0.008;
+    /* A frontal still is already a pixel-perfect render.  Keep it as the
+       base and repaint only moved triangles for expressions.  The full
+       shell remains available once the head actually turns. */
+    lc.drawImage(frontal ? S.src : (S.cache.plate || S.src), 0, 0);
     lc.imageSmoothingQuality = st.quality > 0 ? 'high' : 'low';
-    drawShell(S, lc, st, S.triA, { resetOrder: S.frames < 3, padScale: st.quality > 1 ? 1.4 : 1 });
-    if (st.quality > 0) drawShell(S, lc, st, S.triB, {
+    const shellOpts = {
       resetOrder: S.frames < 3,
       padScale: st.quality > 1 ? 1.4 : 1,
+      onlyChanged: frontal,
+      changeThreshold: 0.18
+    };
+    drawShell(S, lc, st, S.triA, shellOpts);
+    if (st.quality > 0) drawShell(S, lc, st, S.triB, {
+      ...shellOpts,
       /* The Delaunay shell is the crisp base.  The finer tessellation pass
          restores facial detail, but a full-strength second resample makes
          skin look soft during expressions and tracking. */
