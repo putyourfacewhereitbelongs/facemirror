@@ -215,8 +215,11 @@
       mergeFallbacks: 0, initialized: false,
       pad: o.pad, cull: o.cull, mirror: o.mirror !== false
     });
-    S.triA = mkPass(spec.mesh.base, S.normals, { pad: 0.9, cull: -0.02, mirror: true });
-    S.triB = mkPass(spec.mesh.face, S.normalsFace, { pad: 0.95, cull: -0.05, mirror: true });
+    /* Only a fraction of a pixel is needed to hide antialiased seams.
+       Large padded clips overlap and repeatedly resample the same skin,
+       which is especially visible when an emotion moves many triangles. */
+    S.triA = mkPass(spec.mesh.base, S.normals, { pad: 0.35, cull: -0.02, mirror: true });
+    S.triB = mkPass(spec.mesh.face, S.normalsFace, { pad: 0.28, cull: -0.05, mirror: true });
     S.mid = spec.head.mid.slice();
     S.axis = E.tmjAxis(spec.head);
     S.arches = buildArches();
@@ -392,6 +395,7 @@
     const midX = S.mid[0];
     const pad = pass.pad * (o.padScale || 1);
     let drawn = 0, culled = 0;
+    const passAlpha = clamp01(o.alpha === undefined ? 1 : o.alpha);
     for (let t = 0; t < m; t++) {
       const tri = order[t] * 3;
       const a = list[tri], b = list[tri + 1], c = list[tri + 2];
@@ -434,6 +438,7 @@
       const mf = ay - mb * s0x - md * s0y;
       const gx = (ax + bx + cx) / 3, gy = (ay + by + cy) / 3;
       ctx.save();
+      ctx.globalAlpha = passAlpha;
       ctx.beginPath();
       const V = [[ax, ay], [bx, by], [cx, cy]];
       for (let i = 0; i < 3; i++) {
@@ -901,7 +906,14 @@
     lc.drawImage(S.cache.plate || S.src, 0, 0);
     lc.imageSmoothingQuality = st.quality > 0 ? 'high' : 'low';
     drawShell(S, lc, st, S.triA, { resetOrder: S.frames < 3, padScale: st.quality > 1 ? 1.4 : 1 });
-    if (st.quality > 0) drawShell(S, lc, st, S.triB, { resetOrder: S.frames < 3, padScale: st.quality > 1 ? 1.4 : 1 });
+    if (st.quality > 0) drawShell(S, lc, st, S.triB, {
+      resetOrder: S.frames < 3,
+      padScale: st.quality > 1 ? 1.4 : 1,
+      /* The Delaunay shell is the crisp base.  The finer tessellation pass
+         restores facial detail, but a full-strength second resample makes
+         skin look soft during expressions and tracking. */
+      alpha: st.quality > 1 ? 0.72 : 0.48
+    });
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, S.W, S.H);
     let mw = 0, gap = 0, h = S.openEnv;

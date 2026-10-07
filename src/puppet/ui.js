@@ -452,8 +452,11 @@
       A.tgtBuf[i * 3] += A.sculpt[i * 2];
       A.tgtBuf[i * 3 + 1] += A.sculpt[i * 2 + 1];
     }
-    /* one global rate limit on the finished delta */
-    const cap = A.head.fw * 3.0;
+    /* one global rate limit on the finished delta.  A slower expression
+       glide keeps the photo in focus while a preset or click-to-sculpt shape
+       is arriving; the old 3x-face-width/s limit still visibly tore through
+       several affine triangles in a couple of frames. */
+    const cap = A.head.fw * 1.35;
     for (let i = 0; i < 478 * 3; i++) A.outBuf[i] = slew(A.outBuf[i], A.tgtBuf[i], dt, cap, cap);
     return A.outBuf;
   }

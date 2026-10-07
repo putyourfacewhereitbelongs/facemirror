@@ -74,12 +74,12 @@
     if (i >= 468) return 0;                              // irises are rigid
     if (LIPS_I.includes(i) || LIPS_O.includes(i)) return 1.0;
     if (UP_LIP.includes(i) || LO_LIP.includes(i)) return 1.0;
-    if (LIDS.L.up.includes(i) || LIDS.L.lo.includes(i) || LIDS.R.up.includes(i) || LIDS.R.lo.includes(i)) return 1.0;
-    if (LEYE.includes(i) || REYE.includes(i)) return 0.9;
-    if (LBROW.includes(i) || RBROW.includes(i)) return 0.85;
-    if (NOSE.includes(i)) return 0.5;
-    if (RIGID_W(i) <= 0.15) return 0.25;
-    return 0.45;                                          // cheeks
+    if (LIDS.L.up.includes(i) || LIDS.L.lo.includes(i) || LIDS.R.up.includes(i) || LIDS.R.lo.includes(i)) return 0.85;
+    if (LEYE.includes(i) || REYE.includes(i)) return 0.68;
+    if (LBROW.includes(i) || RBROW.includes(i)) return 0.70;
+    if (NOSE.includes(i)) return 0.24;
+    if (RIGID_W(i) <= 0.15) return 0.14;
+    return 0.18;                                          // cheeks: keep webcam noise off the photo
   };
   /* per-landmark anatomical cap for a single expression delta, in face widths */
   const EXPR_CAP = i => {
@@ -516,6 +516,9 @@
     S.knee = k;
     S.neutralCtr = ctr;
     S.neutralAt = performance_now();
+    /* A new neutral pose invalidates the previous expression baseline. */
+    S.residual.fill(0);
+    S.residPrev.fill(0);
   }
   function performance_now() { return (root.performance && root.performance.now) ? root.performance.now() : Date.now(); }
   /* One tracker frame. Returns true when a fresh pose was produced. */
@@ -542,13 +545,32 @@
     /* ---- expression residual = rigid-removed difference --------------- */
     const Ri = m3.t(f.R);
     const k = c.exprGain === undefined ? 1 : c.exprGain;
+    /* The rigid fit removes most pose, but the remaining per-landmark
+       residual still contains detector noise.  Sending that raw field to the
+       triangle warp makes a photograph get re-sampled differently on every
+       webcam frame, which looks like blur and shimmer.  Keep an explicit
+       filtered residual (the buffer existed before but was never used), with
+       a small pixel-scale deadband and a quicker response for lips. */
     for (let i = 0; i < 478; i++) {
       const a = v3.sub(Cf[i], f.cb);
       const b = m3.mv(Ri, a);
       const g3 = i * 3;
-      S.residual[g3] = (b[0] / f.s - n[i][0]) * k;
-      S.residual[g3 + 1] = (b[1] / f.s - n[i][1]) * k;
-      S.residual[g3 + 2] = (b[2] / f.s - n[i][2]) * k;
+      const raw = [
+        (b[0] / f.s - n[i][0]) * k,
+        (b[1] / f.s - n[i][1]) * k,
+        (b[2] / f.s - n[i][2]) * k
+      ];
+      const fast = LIPS_I.includes(i) || LIPS_O.includes(i) || UP_LIP.includes(i) || LO_LIP.includes(i);
+      const rate = fast ? 15 : 8;
+      const dead = fast ? 0.0012 : 0.0022; // roughly 0.3–0.6 px at a 257 px face
+      const alpha = 1 - Math.exp(-rate * Math.max(dt || 1 / 60, 1 / 240));
+      for (let ax = 0; ax < 3; ax++) {
+        const target = Math.abs(raw[ax]) < dead ? 0 : raw[ax];
+        const prev = S.residPrev[g3 + ax];
+        const next = prev + (target - prev) * alpha;
+        S.residPrev[g3 + ax] = next;
+        S.residual[g3 + ax] = next;
+      }
     }
     /* ---- pose -> yaw/pitch/roll, per-axis gain, soft limits ---------- */
     const e = eulerFromQuat(quatFromMat(f.R));
@@ -583,7 +605,10 @@
     S.ox = slew(S.ox, 0, dt, 0.5, 0.5);
     S.oy = slew(S.oy, 0, dt, 0.5, 0.5);
     S.scale = slew(S.scale, 1, dt, 0.35, 0.35);
-    for (let i = 0; i < S.residual.length; i++) S.residual[i] = slew(S.residual[i], 0, dt, 0.6, 0.6);
+    for (let i = 0; i < S.residual.length; i++) {
+      S.residual[i] = slew(S.residual[i], 0, dt, 0.6, 0.6);
+      S.residPrev[i] = S.residual[i];
+    }
   }
 
   /* ===================================================================

@@ -800,12 +800,12 @@ details[open]>summary::before{content:"▾"}
     if (i >= 468) return 0;                              // irises are rigid
     if (LIPS_I.includes(i) || LIPS_O.includes(i)) return 1.0;
     if (UP_LIP.includes(i) || LO_LIP.includes(i)) return 1.0;
-    if (LIDS.L.up.includes(i) || LIDS.L.lo.includes(i) || LIDS.R.up.includes(i) || LIDS.R.lo.includes(i)) return 1.0;
-    if (LEYE.includes(i) || REYE.includes(i)) return 0.9;
-    if (LBROW.includes(i) || RBROW.includes(i)) return 0.85;
-    if (NOSE.includes(i)) return 0.5;
-    if (RIGID_W(i) <= 0.15) return 0.25;
-    return 0.45;                                          // cheeks
+    if (LIDS.L.up.includes(i) || LIDS.L.lo.includes(i) || LIDS.R.up.includes(i) || LIDS.R.lo.includes(i)) return 0.85;
+    if (LEYE.includes(i) || REYE.includes(i)) return 0.68;
+    if (LBROW.includes(i) || RBROW.includes(i)) return 0.70;
+    if (NOSE.includes(i)) return 0.24;
+    if (RIGID_W(i) <= 0.15) return 0.14;
+    return 0.18;                                          // cheeks: keep webcam noise off the photo
   };
   /* per-landmark anatomical cap for a single expression delta, in face widths */
   const EXPR_CAP = i => {
@@ -1242,6 +1242,9 @@ details[open]>summary::before{content:"▾"}
     S.knee = k;
     S.neutralCtr = ctr;
     S.neutralAt = performance_now();
+    /* A new neutral pose invalidates the previous expression baseline. */
+    S.residual.fill(0);
+    S.residPrev.fill(0);
   }
   function performance_now() { return (root.performance && root.performance.now) ? root.performance.now() : Date.now(); }
   /* One tracker frame. Returns true when a fresh pose was produced. */
@@ -1268,13 +1271,32 @@ details[open]>summary::before{content:"▾"}
     /* ---- expression residual = rigid-removed difference --------------- */
     const Ri = m3.t(f.R);
     const k = c.exprGain === undefined ? 1 : c.exprGain;
+    /* The rigid fit removes most pose, but the remaining per-landmark
+       residual still contains detector noise.  Sending that raw field to the
+       triangle warp makes a photograph get re-sampled differently on every
+       webcam frame, which looks like blur and shimmer.  Keep an explicit
+       filtered residual (the buffer existed before but was never used), with
+       a small pixel-scale deadband and a quicker response for lips. */
     for (let i = 0; i < 478; i++) {
       const a = v3.sub(Cf[i], f.cb);
       const b = m3.mv(Ri, a);
       const g3 = i * 3;
-      S.residual[g3] = (b[0] / f.s - n[i][0]) * k;
-      S.residual[g3 + 1] = (b[1] / f.s - n[i][1]) * k;
-      S.residual[g3 + 2] = (b[2] / f.s - n[i][2]) * k;
+      const raw = [
+        (b[0] / f.s - n[i][0]) * k,
+        (b[1] / f.s - n[i][1]) * k,
+        (b[2] / f.s - n[i][2]) * k
+      ];
+      const fast = LIPS_I.includes(i) || LIPS_O.includes(i) || UP_LIP.includes(i) || LO_LIP.includes(i);
+      const rate = fast ? 15 : 8;
+      const dead = fast ? 0.0012 : 0.0022; // roughly 0.3–0.6 px at a 257 px face
+      const alpha = 1 - Math.exp(-rate * Math.max(dt || 1 / 60, 1 / 240));
+      for (let ax = 0; ax < 3; ax++) {
+        const target = Math.abs(raw[ax]) < dead ? 0 : raw[ax];
+        const prev = S.residPrev[g3 + ax];
+        const next = prev + (target - prev) * alpha;
+        S.residPrev[g3 + ax] = next;
+        S.residual[g3 + ax] = next;
+      }
     }
     /* ---- pose -> yaw/pitch/roll, per-axis gain, soft limits ---------- */
     const e = eulerFromQuat(quatFromMat(f.R));
@@ -1309,7 +1331,10 @@ details[open]>summary::before{content:"▾"}
     S.ox = slew(S.ox, 0, dt, 0.5, 0.5);
     S.oy = slew(S.oy, 0, dt, 0.5, 0.5);
     S.scale = slew(S.scale, 1, dt, 0.35, 0.35);
-    for (let i = 0; i < S.residual.length; i++) S.residual[i] = slew(S.residual[i], 0, dt, 0.6, 0.6);
+    for (let i = 0; i < S.residual.length; i++) {
+      S.residual[i] = slew(S.residual[i], 0, dt, 0.6, 0.6);
+      S.residPrev[i] = S.residual[i];
+    }
   }
 
   /* ===================================================================
@@ -1627,8 +1652,11 @@ details[open]>summary::before{content:"▾"}
       mergeFallbacks: 0, initialized: false,
       pad: o.pad, cull: o.cull, mirror: o.mirror !== false
     });
-    S.triA = mkPass(spec.mesh.base, S.normals, { pad: 0.9, cull: -0.02, mirror: true });
-    S.triB = mkPass(spec.mesh.face, S.normalsFace, { pad: 0.95, cull: -0.05, mirror: true });
+    /* Only a fraction of a pixel is needed to hide antialiased seams.
+       Large padded clips overlap and repeatedly resample the same skin,
+       which is especially visible when an emotion moves many triangles. */
+    S.triA = mkPass(spec.mesh.base, S.normals, { pad: 0.35, cull: -0.02, mirror: true });
+    S.triB = mkPass(spec.mesh.face, S.normalsFace, { pad: 0.28, cull: -0.05, mirror: true });
     S.mid = spec.head.mid.slice();
     S.axis = E.tmjAxis(spec.head);
     S.arches = buildArches();
@@ -1804,6 +1832,7 @@ details[open]>summary::before{content:"▾"}
     const midX = S.mid[0];
     const pad = pass.pad * (o.padScale || 1);
     let drawn = 0, culled = 0;
+    const passAlpha = clamp01(o.alpha === undefined ? 1 : o.alpha);
     for (let t = 0; t < m; t++) {
       const tri = order[t] * 3;
       const a = list[tri], b = list[tri + 1], c = list[tri + 2];
@@ -1846,6 +1875,7 @@ details[open]>summary::before{content:"▾"}
       const mf = ay - mb * s0x - md * s0y;
       const gx = (ax + bx + cx) / 3, gy = (ay + by + cy) / 3;
       ctx.save();
+      ctx.globalAlpha = passAlpha;
       ctx.beginPath();
       const V = [[ax, ay], [bx, by], [cx, cy]];
       for (let i = 0; i < 3; i++) {
@@ -2313,7 +2343,14 @@ details[open]>summary::before{content:"▾"}
     lc.drawImage(S.cache.plate || S.src, 0, 0);
     lc.imageSmoothingQuality = st.quality > 0 ? 'high' : 'low';
     drawShell(S, lc, st, S.triA, { resetOrder: S.frames < 3, padScale: st.quality > 1 ? 1.4 : 1 });
-    if (st.quality > 0) drawShell(S, lc, st, S.triB, { resetOrder: S.frames < 3, padScale: st.quality > 1 ? 1.4 : 1 });
+    if (st.quality > 0) drawShell(S, lc, st, S.triB, {
+      resetOrder: S.frames < 3,
+      padScale: st.quality > 1 ? 1.4 : 1,
+      /* The Delaunay shell is the crisp base.  The finer tessellation pass
+         restores facial detail, but a full-strength second resample makes
+         skin look soft during expressions and tracking. */
+      alpha: st.quality > 1 ? 0.72 : 0.48
+    });
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, S.W, S.H);
     let mw = 0, gap = 0, h = S.openEnv;
@@ -2847,8 +2884,11 @@ details[open]>summary::before{content:"▾"}
       A.tgtBuf[i * 3] += A.sculpt[i * 2];
       A.tgtBuf[i * 3 + 1] += A.sculpt[i * 2 + 1];
     }
-    /* one global rate limit on the finished delta */
-    const cap = A.head.fw * 3.0;
+    /* one global rate limit on the finished delta.  A slower expression
+       glide keeps the photo in focus while a preset or click-to-sculpt shape
+       is arriving; the old 3x-face-width/s limit still visibly tore through
+       several affine triangles in a couple of frames. */
+    const cap = A.head.fw * 1.35;
     for (let i = 0; i < 478 * 3; i++) A.outBuf[i] = slew(A.outBuf[i], A.tgtBuf[i], dt, cap, cap);
     return A.outBuf;
   }
