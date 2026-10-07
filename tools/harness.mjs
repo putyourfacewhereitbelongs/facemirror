@@ -249,8 +249,8 @@ const restDbg = renderAt([0, 0, 0, 1]);
 const turnDbg = renderAt(FM.quatFromYPR(0.55, 0, -0.1));
 ok('far-side mirroring activates on a turn', turnDbg.culled > restDbg.culled && turnDbg.culled > 0,
    `${restDbg.culled} frontal -> ${turnDbg.culled} mirrored triangles`);
-ok('shell coverage stays complete through yaw', restDbg.tris > 0 && turnDbg.tris > 2400,
-   `${restDbg.tris} frontal direct/changed -> ${turnDbg.tris} turned shell triangles`);
+ok('shell coverage stays complete through yaw', restDbg.tris === 0 && turnDbg.tris > 2400,
+   `${restDbg.tris} frontal source-only -> ${turnDbg.tris} turned shell triangles`);
 /* Both the base shell and face tessellation must remain far-to-near. */
 const orderOk = checkPaintOrder(ses);
 ok('both shell passes drawn far to near', orderOk.ok, orderOk.msg);

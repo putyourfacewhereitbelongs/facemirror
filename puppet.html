@@ -1835,6 +1835,12 @@ details[open]>summary::before{content:"▾"}
         }
       }
     }
+    /* Frontal frames can stay on the original photograph.  This is the
+       important quality guard: a 2.5D triangle warp is never allowed to
+       repaint a straight-on face just because the tracker emitted a noisy
+       landmark residual.  We still sort/prepare the pass above so its state
+       is ready if the head later turns. */
+    if (o.skipPaint) return 0;
     const R = matFromQuat(st.q);
     const midX = S.mid[0];
     const pad = pass.pad * (o.padScale || 1);
@@ -2221,28 +2227,40 @@ details[open]>summary::before{content:"▾"}
   }
 
   function drawCavity(S, ctx, D, h) {
-    const In = E.LIPS_I.map(i => D[i]);
-    if (!polyOK(In, 2.5)) return false;
-    const bb = bounds(In);
+    const a = D[61], b = D[291], up = D[13], lo = D[14];
+    const mw = Math.hypot(b.x - a.x, b.y - a.y) || S.head.fw * 0.4;
+    const gap = Math.hypot(lo.x - up.x, lo.y - up.y);
+    if (![a, b, up, lo].every(p => p && Number.isFinite(p.x) && Number.isFinite(p.y)) || !(mw > 4 && gap > 0.5)) return false;
+    const ax = (b.x - a.x) / mw, ay = (b.y - a.y) / mw;
+    let nx = -ay, ny = ax;
+    if ((lo.x - up.x) * nx + (lo.y - up.y) * ny < 0) { nx = -nx; ny = -ny; }
+    const ocx = (up.x + lo.x) * 0.5, ocy = (up.y + lo.y) * 0.5;
+    /* A rounded four-point mouth opening is much more stable than filling
+       the raw eight-point inner-lip polygon after a jaw turn.  The latter
+       can self-cross and paint a black triangular wedge. */
+    const halfH = clamp(Math.max(gap * 0.5, mw * 0.018), mw * 0.018, mw * 0.18);
+    const tx = ocx - nx * halfH, ty = ocy - ny * halfH;
+    const bx = ocx + nx * halfH, by = ocy + ny * halfH;
+    const poly = [{ x: a.x, y: a.y }, { x: b.x, y: b.y }, { x: bx, y: by }, { x: tx, y: ty }];
+    if (!polyOK(poly, 2)) return false;
+    const bb = bounds(poly);
     ctx.save();
     ctx.beginPath();
-    In.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+    ctx.moveTo(a.x, a.y);
+    ctx.quadraticCurveTo(tx, ty, b.x, b.y);
+    ctx.quadraticCurveTo(bx, by, a.x, a.y);
     ctx.closePath();
-    ctx.clip();
-    const g = ctx.createLinearGradient(D[13].x, D[13].y, D[14].x, D[14].y);
-    g.addColorStop(0, `rgba(70,20,24,${0.85 * h})`);
-    g.addColorStop(.55, `rgba(28,7,10,${0.95 * h})`);
-    g.addColorStop(1, `rgba(18,4,7,${0.9 * h})`);
+    const g = ctx.createLinearGradient(tx, ty, bx, by);
+    g.addColorStop(0, `rgba(92,28,34,${0.72 * h})`);
+    g.addColorStop(.48, `rgba(25,7,10,${0.86 * h})`);
+    g.addColorStop(1, `rgba(52,14,20,${0.78 * h})`);
     ctx.fillStyle = g;
-    ctx.fillRect(bb.x0 - 2, bb.y0 - 2, bb.w + 4, bb.h + 4);
-    const mx = (D[13].x + D[14].x) / 2, my = (D[13].y + D[14].y) / 2;
-    const mw = Math.hypot(D[61].x - D[291].x, D[61].y - D[291].y) || S.head.fw * 0.4;
-    const r = Math.max(2, mw * 0.34);
-    const rg = ctx.createRadialGradient(mx, my, 1, mx, my, r);
-    rg.addColorStop(0, `rgba(3,0,1,${0.8 * h})`);
-    rg.addColorStop(1, 'rgba(3,0,1,0)');
+    ctx.fill();
+    const rg = ctx.createRadialGradient(ocx, ocy, 1, ocx, ocy, Math.max(3, mw * 0.24));
+    rg.addColorStop(0, `rgba(4,1,2,${0.42 * h})`);
+    rg.addColorStop(1, 'rgba(4,1,2,0)');
     ctx.fillStyle = rg;
-    ctx.fillRect(bb.x0 - 2, bb.y0 - 2, bb.w + 4, bb.h + 4);
+    ctx.fill();
     ctx.restore();
     return true;
   }
@@ -2361,10 +2379,10 @@ details[open]>summary::before{content:"▾"}
     lc.clearRect(0, 0, S.W, S.H);
     const q = st.q || [0, 0, 0, 1];
     const qAngle = 2 * Math.acos(clamp(Math.abs(q[3]), 0, 1));
-    const frontal = qAngle < 0.12
-      && Math.abs(st.ox || 0) < 8
-      && Math.abs(st.oy || 0) < 8
-      && Math.abs((st.scale === undefined ? 1 : st.scale) - 1) < 0.05;
+    /* Translation/scale from the webcam are not reasons to repaint a
+       straight-on photo; they are especially noisy after model inference.
+       Hold the original source until there is a real, unmistakable turn. */
+    const frontal = qAngle < 0.28;
     /* A frontal still is already a pixel-perfect render.  Keep it as the
        base and repaint only moved triangles for expressions.  The full
        shell remains available once the head actually turns. */
@@ -2373,15 +2391,14 @@ details[open]>summary::before{content:"▾"}
     const shellOpts = {
       resetOrder: S.frames < 3,
       padScale: st.quality > 1 ? 1.4 : 1,
-      onlyChanged: frontal,
-      changeThreshold: 0.18
+      /* Never paint triangle patches over a straight-on source portrait. */
+      skipPaint: frontal
     };
     drawShell(S, lc, st, S.triA, shellOpts);
     if (st.quality > 0) drawShell(S, lc, st, S.triB, {
       ...shellOpts,
-      /* The Delaunay shell is the crisp base.  The finer tessellation pass
-         restores facial detail, but a full-strength second resample makes
-         skin look soft during expressions and tracking. */
+      /* The Delaunay shell is only used on a real turn. The finer pass
+         restores facial detail there without affecting frontal sharpness. */
       alpha: st.quality > 1 ? 0.72 : 0.48
     });
     ctx.setTransform(1, 0, 0, 1, 0, 0);
