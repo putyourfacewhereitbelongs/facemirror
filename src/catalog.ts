@@ -3,6 +3,8 @@ import { ScanFace, Sparkles, AudioLines, Box, WandSparkles, Waves, Smile, Apertu
 export type Demo = {
   slug: string; title: string; eyebrow: string; description: string; category: string;
   accent: string; icon: typeof ScanFace; capabilities: string[]; note?: string;
+  /** When set, the card links straight to a standalone page instead of the in-app workspace. */
+  href?: string;
 };
 
 export const demos: Demo[] = [
@@ -11,6 +13,7 @@ export const demos: Demo[] = [
   { slug:'openface-au', title:'Action Unit Lab', eyebrow:'FACS-inspired · live', description:'Inspect expression signals for brows, eyes, cheeks, jaw, and lips as animated meters.', category:'Landmark detection', accent:'#2dd4bf', icon:Waves, capabilities:['Live expression meters','Confidence readout','Signal smoothing'], note:'Signals are MediaPipe blendshapes with FACS-inspired labels, not an OpenFace diagnostic result.' },
   { slug:'fan-alignment', title:'Face Alignment Network', eyebrow:'2D / 3D alignment view', description:'Explore normalized geometry, depth cues, symmetry axes, and pose-stable alignment.', category:'Landmark detection', accent:'#f472b6', icon:Box, capabilities:['Depth color map','Alignment guides','Pose normalization'], note:'Interactive browser analogue powered by MediaPipe geometry.' },
 
+  { slug:'trill-face-puppet', title:'Trill Face Puppet', eyebrow:'full-page reenactment rig', description:'Drive any photo from your webcam with a real perspective head turn, an inpainted background plate, rigid dental arches, a hinged mandible, audio-driven visemes, and click-to-sculpt landmarks.', category:'Portrait motion', accent:'#f472b6', icon:ScanFace, capabilities:['3D head rotation + dolly','Rigid teeth, gums & tongue','Audio visemes + prosody','Photo & video capture'], note:'Runs the MediaPipe face and pose landmarkers in-browser. Motion, relighting, oral geometry and visemes are procedural analogues of FOMM / LivePortrait / Wav2Lip, not those networks - the technique map on the page labels every item.', href:'./puppet.html' },
   { slug:'fomm', title:'First-Order Motion', eyebrow:'keypoint motion', description:'Drive a still portrait with sparse facial motion and occlusion-aware region compositing.', category:'Portrait motion', accent:'#fb7185', icon:Sparkles, capabilities:['Source identity pixels','Live keypoint motion','Region compositing'] },
   { slug:'tps', title:'Thin Plate Spline', eyebrow:'expressive warp', description:'A higher-flexibility local warp view for eyebrows, eyes, mouth, jaw, and head pose.', category:'Portrait motion', accent:'#f97316', icon:WandSparkles, capabilities:['Local deformation','Large expression range','Smooth falloff'] },
   { slug:'face-vid2vid', title:'Face Vid2Vid', eyebrow:'pose + expression', description:'Separate head-pose and expression controls while reenacting a static portrait.', category:'Portrait motion', accent:'#facc15', icon:Box, capabilities:['Pose decomposition','Expression transfer','Free-view preview'] },
