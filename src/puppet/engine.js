@@ -74,12 +74,13 @@
     if (i >= 468) return 0;                              // irises are rigid
     if (LIPS_I.includes(i) || LIPS_O.includes(i)) return 1.0;
     if (UP_LIP.includes(i) || LO_LIP.includes(i)) return 1.0;
-    if (LIDS.L.up.includes(i) || LIDS.L.lo.includes(i) || LIDS.R.up.includes(i) || LIDS.R.lo.includes(i)) return 0.85;
-    if (LEYE.includes(i) || REYE.includes(i)) return 0.68;
-    if (LBROW.includes(i) || RBROW.includes(i)) return 0.70;
-    if (NOSE.includes(i)) return 0.24;
-    if (RIGID_W(i) <= 0.15) return 0.14;
-    return 0.18;                                          // cheeks: keep webcam noise off the photo
+    /* Webcam residuals are a detail layer, not a second full face warp.
+       MediaPipe's cheek / nose coordinates carry enough identity and lighting
+       noise to turn a sharp portrait into a field of triangular patches. */
+    if (LIDS.L.up.includes(i) || LIDS.L.lo.includes(i) || LIDS.R.up.includes(i) || LIDS.R.lo.includes(i)) return 0.72;
+    if (LEYE.includes(i) || REYE.includes(i)) return 0.36;
+    if (LBROW.includes(i) || RBROW.includes(i)) return 0.42;
+    return 0;                                             // cheeks, nose, jaw: actions only
   };
   /* per-landmark anatomical cap for a single expression delta, in face widths */
   const EXPR_CAP = i => {

@@ -923,10 +923,10 @@
     lc.clearRect(0, 0, S.W, S.H);
     const q = st.q || [0, 0, 0, 1];
     const qAngle = 2 * Math.acos(clamp(Math.abs(q[3]), 0, 1));
-    const frontal = qAngle < 0.020
-      && Math.abs(st.ox || 0) < 1.25
-      && Math.abs(st.oy || 0) < 1.25
-      && Math.abs((st.scale === undefined ? 1 : st.scale) - 1) < 0.008;
+    const frontal = qAngle < 0.12
+      && Math.abs(st.ox || 0) < 8
+      && Math.abs(st.oy || 0) < 8
+      && Math.abs((st.scale === undefined ? 1 : st.scale) - 1) < 0.05;
     /* A frontal still is already a pixel-perfect render.  Keep it as the
        base and repaint only moved triangles for expressions.  The full
        shell remains available once the head actually turns. */
