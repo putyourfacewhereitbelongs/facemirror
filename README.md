@@ -15,10 +15,11 @@ Or serve it (recommended: camera APIs want a proper origin):
 
 ```bash
 npm run build            # src/ -> puppet.html + index.html
+npm run check            # fail if the committed page is stale vs src/
 npm run serve            # http://0.0.0.0:4173/
 npm run verify           # 37 pure-math checks (geometry, quaternions, filters)
 npm run harness          # 39 behavioural checks against a mock DOM + synthetic face
-npm test                 # verify + harness
+npm test                 # check + verify + harness
 ```
 
 ## Controls

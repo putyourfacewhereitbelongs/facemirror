@@ -30,15 +30,32 @@ async function inlineOne(rel) {
   return `<script data-src="${rel}">\n${code}\n</script>\n`;
 }
 
-export async function build() {
+/* render the two pages in memory — the single source of truth for both
+   `build` and `check`, so a stale page can never pass as current */
+export async function render() {
   const src = await readFile(join(rootDir, 'src/puppet/puppet.src.html'), 'utf8');
   const blobs = [];
   for (const rel of SCRIPTS) blobs.push(await inlineOne(rel));
   const out = src.replace(/<!--@include[^>]*-->/g, () => blobs.shift());
   if (out.includes('@include')) throw new Error('not every @include marker was replaced');
-  await writeFile(join(rootDir, 'puppet.html'), out, 'utf8');
-  await writeFile(join(rootDir, 'index.html'), landingPage(), 'utf8');
-  return { bytes: Buffer.byteLength(out), files: SCRIPTS.length };
+  return { puppet: out, index: landingPage() };
+}
+export async function build() {
+  const { puppet, index } = await render();
+  await writeFile(join(rootDir, 'puppet.html'), puppet, 'utf8');
+  await writeFile(join(rootDir, 'index.html'), index, 'utf8');
+  return { bytes: Buffer.byteLength(puppet), files: SCRIPTS.length };
+}
+/* --check: is the committed page byte-identical to what src/ renders?
+   returns the list of stale files (empty when everything is current)   */
+export async function stale() {
+  const { puppet, index } = await render();
+  const bad = [];
+  for (const [name, want] of [['puppet.html', puppet], ['index.html', index]]) {
+    const have = await readFile(join(rootDir, name), 'utf8').catch(() => null);
+    if (have !== want) bad.push(name);
+  }
+  return bad;
 }
 
 function landingPage() {
@@ -87,7 +104,15 @@ function landingPage() {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const r = await build();
-  const msg = `built puppet.html (${(r.bytes / 1024).toFixed(1)} kB, ${r.files} modules inlined) + index.html`;
-  console.log((checkOnly ? 'check: ' : '') + msg);
+  if (checkOnly) {
+    const bad = await stale();
+    if (bad.length) {
+      console.error(`check: STALE — ${bad.join(', ')} does not match src/. Run \`npm run build\`.`);
+      process.exit(1);
+    }
+    console.log('check: puppet.html + index.html match src/ exactly');
+  } else {
+    const r = await build();
+    console.log(`built puppet.html (${(r.bytes / 1024).toFixed(1)} kB, ${r.files} modules inlined) + index.html`);
+  }
 }
