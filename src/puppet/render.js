@@ -418,6 +418,13 @@
       }
       const det = (s1x - s0x) * (s2y - s0y) - (s1y - s0y) * (s2x - s0x);
       if (!isFinite(det) || Math.abs(det) < 1e-6) continue;
+      /* A local sculpt must not fold a source triangle over itself.  The
+         affine below can faithfully paint an inverted triangle, but on a
+         textured portrait that reads as a large random block.  The source
+         winding is unchanged by the far-side mirror plus vertex swap, so a
+         sign change here is a real fold, not a legitimate head turn.  The
+         plate underneath supplies a calm fallback for that tiny triangle. */
+      if (area * det <= 0) continue;
       const k = 1 / det;
       const ma = ((bx - ax) * (s2y - s0y) - (by - ay) * (s2x - s0x)) * k;
       const mb = ((by - ay) * (s1x - s0x) - (bx - ax) * (s1y - s0y)) * k;

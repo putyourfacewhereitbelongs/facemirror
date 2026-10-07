@@ -652,17 +652,41 @@
     return inside;
   }
   /* click-to-sculpt: only accept a real hit on the projected face contour;
-     edits remain in canonical space, so the shape stays on the face as it turns. */
+     edits remain in canonical space, so the shape stays on the face as it turns.
+
+     A click used to move only the handful of named landmarks below.  That is
+     enough to make the landmark dots look right, but it leaves every adjacent
+     triangle vertex behind.  The photo warp then stretches those triangles
+     into conspicuous rectangular blocks.  Apply each handle move as a small
+     Gaussian field instead: the handle still gets the requested displacement,
+     while its mesh neighbours follow continuously.  `da` is the existing
+     Drag area slider; even at zero we keep a small safety radius so a single
+     face triangle can never be pulled into a spike.                         */
   function sculptShape(kind, screen) {
     if (!A.head || !insideFace(screen)) return false;
-    const u = A.head.fw * 0.1;
+    const head = A.head;
+    const u = head.fw * 0.1;
+    const area = clamp(num('da', 1), 0, 2);
+    const radius = head.fw * (0.035 + 0.065 * area);
+    const radius2 = Math.max(1, radius * radius);
     const move = (i, dx, dy) => {
-      A.sculpt[i * 2] += dx;
-      A.sculpt[i * 2 + 1] += dy;
-      const p = chk('sym') && A.partIdx ? A.partIdx[i] : -1;
-      if (p >= 0 && p !== i) { A.sculpt[p * 2] += -dx; A.sculpt[p * 2 + 1] += dy; }
+      const anchor = head.P[i];
+      if (!anchor || !Number.isFinite(anchor[0]) || !Number.isFinite(anchor[1])) return;
+      /* Work in the canonical photo plane.  The field is deliberately
+         isotropic: the renderer supplies the perspective and head turn. */
+      for (let j = 0; j < 478; j++) {
+        const p = head.P[j];
+        const dd = (p[0] - anchor[0]) ** 2 + (p[1] - anchor[1]) ** 2;
+        const falloff = Math.exp(-dd / (2 * radius2));
+        if (falloff < 0.002) continue;
+        A.sculpt[j * 2] += dx * falloff;
+        A.sculpt[j * 2 + 1] += dy * falloff;
+      }
     };
     pushUndo();
+    /* These expression recipes name both sides where symmetry is intended.
+       Do not mirror each call again: doing that made paired handles double
+       their displacement when the Symmetric drag checkbox was enabled. */
     if (kind === 'smile') { move(61, -u * .12, -u * .62); move(291, u * .12, -u * .62); move(13, 0, -u * .1); move(14, 0, u * .18); move(48, 0, -u * .16); move(278, 0, -u * .16); move(205, 0, -u * .1); move(425, 0, -u * .1); }
     else if (kind === 'frown') { move(61, -u * .08, u * .56); move(291, u * .08, u * .56); move(13, 0, u * .08); move(14, 0, -u * .1); }
     else if (kind === 'o') { move(61, u * .72, 0); move(291, -u * .72, 0); move(13, 0, -u * .46); move(14, 0, u * .72); move(0, 0, -u * .26); move(17, 0, u * .26); }
@@ -672,6 +696,13 @@
     else if (kind === 'wink') { move(159, 0, u * .5); move(145, 0, -u * .44); }
     else if (kind === 'puff') { move(205, u * .45, 0); move(425, -u * .45, 0); move(50, u * .3, 0); move(280, -u * .3, 0); }
     else if (kind === 'reset') { A.sculpt.fill(0); A.outBuf.fill(0); flashStatus('Face sculpt cleared.'); return true; }
+    /* Repeated clicks remain an intentional way to intensify a shape, but
+       never beyond a physically usable facial displacement. */
+    const cap = head.fw * 0.16;
+    for (let i = 0; i < 478; i++) {
+      const k = i * 2, len = Math.hypot(A.sculpt[k], A.sculpt[k + 1]);
+      if (len > cap) { const s = cap / len; A.sculpt[k] *= s; A.sculpt[k + 1] *= s; }
+    }
     flashStatus(kind === 'o'
       ? 'Mouth O applied — drag the inner-mouth dots for fine control.'
       : (kind === 'brows' ? 'Brows raised.' : kind.charAt(0).toUpperCase() + kind.slice(1) + ' applied — drag dots to refine.'));

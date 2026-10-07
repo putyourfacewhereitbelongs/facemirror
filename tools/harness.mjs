@@ -337,6 +337,26 @@ clickAt(mouthPoint);
 const smileWorked = app.sculpt.some(v => v !== 0);
 ok('expression sculpt is hit-tested to the face', outsideUnchanged && smileWorked,
    `outside ignored; mouth click edited ${app.sculpt.filter(v => v !== 0).length} offsets`);
+/* A click-to-expression regression: the old sparse edit moved only the named
+   handles, leaving long edges between them and their untouched neighbours.
+   That produced visible rectangular texture blocks in the affine warp. */
+const smileSculpt = Float32Array.from(app.sculpt);
+let movedSmile = 0, maxSmile = 0, maxSmileNeighbourStep = 0;
+for (let i = 0; i < 478; i++) {
+  const k = i * 2, amount = Math.hypot(smileSculpt[k], smileSculpt[k + 1]);
+  if (amount > 0.25) movedSmile++;
+  maxSmile = Math.max(maxSmile, amount);
+  for (const j of (mesh.nbr[i] || [])) if (j < 478) {
+    maxSmileNeighbourStep = Math.max(maxSmileNeighbourStep,
+      Math.hypot(smileSculpt[k] - smileSculpt[j * 2], smileSculpt[k + 1] - smileSculpt[j * 2 + 1]));
+  }
+}
+t += 16.7; dom.setClock(t); resetCtx();
+const smileFrame = T.frame(t, 1 / 60, true);
+const smileViolations = collectCtx().reduce((n, c) => n + c.violations.length, 0);
+ok('smile follows neighbouring mesh points without block folds',
+   movedSmile > 200 && maxSmileNeighbourStep < maxSmile * 0.8 && smileFrame.dbg.tris > 2200 && smileViolations === 0,
+   `${movedSmile} points moved; neighbour step ${maxSmileNeighbourStep.toFixed(1)} / ${maxSmile.toFixed(1)} px; ${smileFrame.dbg.tris} triangles`);
 const beforeO = Float32Array.from(app.sculpt);
 const oTool = rack.children.find(c => c.dataset.sculpt === 'o');
 rack.fire('click', { target: oTool }); clickAt(mouthPoint);
