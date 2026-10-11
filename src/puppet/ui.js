@@ -54,7 +54,12 @@
     gaze: [[0, 0], [0, 0]], gazeS: [[0, 0], [0, 0]], gazeNeutral: [[0, 0], [0, 0]], sacT: 0, sacV: [0, 0],
     lidRaw: [0, 0], lid: [0, 0], lidN: [null, null], kissRaw: 0, kiss: 0, tongueRaw: 0, tongue: 0,
     liveKiss: 0, liveTongue: 0, liveSmile: 0, liveFrown: 0, liveSquint: 0,
+    mouth: E.zeroMouth(),          // smoothed mouth field actually rendered
+    mouthTgt: E.zeroMouth(),       // where the active drivers want it
+    mouthFromCam: false,           // did the webcam supply this frame's mouth?
+    jawAngle: 0, kissT: 0,
     exprBuf: new Float32Array(478 * 3), resBuf: new Float32Array(478 * 3), tgtBuf: new Float32Array(478 * 3),
+    mouthBuf: new Float32Array(478 * 3), axes: [1, 1, 1],
     outBuf: new Float32Array(478 * 3),
     perf: { last: 0, dt: 1 / 60, fps: 0, n: 0, t0: 0, hud: 0, t: 0 },
     pose: { cur: null, neu: null, JI: null, tick: 0 },
@@ -196,6 +201,8 @@
     A.drag = -1; A.hover = -1;
     A.lidN = [null, null];
     A.gazeNeutral = [[0, 0], [0, 0]];
+    A.mouth = E.zeroMouth(); A.mouthTgt = E.zeroMouth();
+    A.axes = [1, 1, 1];
     buildPoints();
     buildPartners();
   }
@@ -277,6 +284,9 @@
     if (!A.tracker || !A.tracker.have) { flashStatus('No tracked face yet — look at the camera, then press it again.'); return; }
     E.trackerSetNeutral(A.tracker, A.cam ? A.cam.width : 640, A.cam ? A.cam.height : 480);
     if (syncP2()) A.gazeNeutral = [E.irisOffset(A.p2, 'L'), E.irisOffset(A.p2, 'R')];
+    /* the driver's face proportions vs the photo's: one number of anisotropy
+       so vertical expression lands the same distance on both faces */
+    A.axes = A.head ? E.fitAxes(A.head, { fw: A.tracker.knee || 1, fh: (A.tracker.driverAspect || 1.35) * (A.tracker.knee || 1) }) : [1, 1, 1];
     if (A.pose.cur) A.pose.neu = A.pose.cur.map(p => p.slice());
     flashStatus('Neutral pose stored — the pose glides to it.');
   }
@@ -419,6 +429,15 @@
       A.gazeS[e][1] += (gy - A.gazeS[e][1]) * clamp01(dt * 26);
       A.gaze[e] = [clamp(A.gazeS[e][0], -.30, .30), clamp(A.gazeS[e][1], -.14, .14)];
     }
+    /* ---- the mouth -------------------------------------------------
+       Exactly one driver is in charge of the mouth at any moment: the
+       webcam's own lip geometry when the webcam is on, otherwise the
+       preset / microphone actions.  Before this, three separate fields
+       (a jaw from the blendshape, a mouth from the residual, a mouth from
+       the preset) were summed into the same lips, which is why the mouth
+       opened only slightly and never quite looked like the driver's.
+       Switching between the two sources is a cross-fade over ~0.3 s.  */
+    resolveMouth(dt, live);
     /* visemes from the microphone */
     if (A.micOn && A.analyser && A.freq) {
       const n = A.analyser.frequencyBinCount;
@@ -435,16 +454,82 @@
     }
   }
 
+  /* ------------------------------------------------------------ mouth mix */
+  /* Turn whatever is driving the mouth into one field of unit-free numbers
+     (see FMEngine.mouthFeatures).  Webcam first, actions second: a preset
+     conversation and a live face never fight over the same lips.        */
+  function resolveMouth(dt, live) {
+    const M = A.mouth, T = A.mouthTgt;
+    /* --- what the actions want ------------------------------------- */
+    const acts = A.actions;
+    const smile = Math.max(0, nz(acts.sL) + nz(acts.sR)) * 0.5;
+    const frown = nz(acts.fr);
+    let wide = 0.62 * Math.max(0, nz(acts.sL) + nz(acts.sR)) * 0.5 + 1.35 * nz(acts.st) + 0.55 * nz(acts.sq);
+    let narrow = 1.05 * Math.max(nz(acts.pk), nz(A.kiss));
+    const openA = clamp01(nz(acts.j)) * 1.15 + 0.25 * Math.max(nz(acts.eo), nz(acts.tg));
+    const upRoll = 0.85 * nz(acts.ur) + 0.35 * Math.max(nz(acts.nz), nz(acts.sq));
+    let open = openA, lift = smile - frown, asym = 0.55 * nz(acts.buR);
+    /* --- what the webcam wants ------------------------------------- */
+    /* Who owns the mouth?  Following the webcam is the point of the app, so
+       in "Live webcam" (or with Mix on) the camera's own lips own it
+       outright.  A named preset is an explicit instruction, so there the
+       preset leads — but a face that is actually talking still opens the
+       mouth through the camera, just at reduced weight.               */
+    let fromCam = false;
+    const tf = A.tracker && A.tracker.mouthF;
+    const camW = (live && tf && A.tracker.trust > 0.2) ? clamp01((A.tracker.trust - 0.2) / 0.5) : 0;
+    const owns = A.preset === 'live' || chk('pmix');
+    const camOpen = Math.max(nz(tf && tf.open) * 1.55, clamp01(nz(A.live.j)) * 1.35);
+    const camKiss = Math.max(nz(A.kiss), clamp01(nz(tf && tf.narrow) * 2.2));
+    if (camW > 0) {
+      const w = camW * (owns ? 1 : 0.3);
+      open = mix(open, camOpen, w);
+      lift = mix(lift, nz(tf.lift) * 2.4 + clamp01(nz(A.live.sL)) * 0.55, w);
+      wide = mix(wide, nz(tf.wide) * 1.7 + clamp01(nz(A.live.sL)) * 1.1, w);
+      narrow = mix(narrow, nz(tf.narrow) * 1.6 + nz(A.kiss) * 1.1, w);
+      asym = mix(asym, nz(tf.asym) * 2.0, w);
+      if (!owns) open = Math.max(open, camOpen * camW * 0.85);   // still talking
+      fromCam = owns && camW > 0.05;
+    }
+    A.kissT = mix(A.kissT, camKiss, clamp01(dt * (camW > 0 ? 14 : 8)));
+    A.mouthFromCam = fromCam;
+    /* lips pressed together read as a negative opening, which is what
+       stops a photo mouth from gaping when the driver's is shut */
+    const press = fromCam && tf && tf.open < -0.12 ? clamp01(-tf.open * 2.2) : 0;
+    T.open = clamp(open - press * 0.5, -0.35, 1.8);
+    T.wide = clamp(wide, -0.4, 2.2);
+    T.narrow = clamp(narrow, -0.4, 1.6);
+    T.lift = clamp(lift, -2.2, 2.2);
+    T.asym = clamp(asym, -1.6, 1.6);
+    T.push = clamp(camKiss * 1.1 + narrow * 0.8 + nz(acts.eo) * 0.3, -0.6, 2.2);
+    T.rollUp = clamp(upRoll + (fromCam ? nz(tf.rollUp) * 1.4 : 0), -1.2, 1.2);
+    T.rollLo = clamp((fromCam ? nz(tf.rollLo) * 1.4 : 0) + narrow * 0.5, -1.2, 1.2);
+    /* speech needs the mouth to move faster than an expression does, and a
+       closing mouth must not lag behind the jaw or the aperture flickers */
+    const rate = A.micOn ? 26 : (fromCam ? 22 : 15);
+    const rel = A.micOn ? 20 : (fromCam ? 17 : 12);
+    for (const k in T) {
+      const v = T[k];
+      M[k] = A.ses && A.ses.ready ? envelope(M[k] || 0, v, dt, k === 'open' ? rate : rate * 0.8, k === 'open' ? rel : rel * 0.8)
+                                  : v;
+    }
+    /* jaw angle: a real mandible, driven by the same opening number */
+    A.jawAngle = E.jawAngleFor(M.open);
+  }
+
   /* ------------------------------------------------------ expression mix */
   function composeDelta(dt) {
     const strength = num('exs', 0.8);
     const acts = { ...A.actions, pk: Math.max(nz(A.actions.pk), nz(A.kiss)), tg: Math.max(nz(A.actions.tg), nz(A.tongue)) };
     const d1 = E.expressionDelta(A.head, acts, A.exprBuf);
     for (let i = 0; i < 478 * 3; i++) A.tgtBuf[i] = d1[i] * strength;
+    /* the mouth itself, from the resolved field */
+    const dm = E.mouthDelta(A.head, A.mouth, A.mouthBuf);
+    for (let i = 0; i < 478 * 3; i++) A.tgtBuf[i] += dm[i] * strength;
     const useRes = A.tracker && A.tracker.neutral && (A.preset === 'live' ? true : chk('pmix'));
     if (useRes) {
-      const g = clamp01(strength * 1.15) * A.tracker.trust;
-      E.retargetResidual(A.head, null, A.tracker.residual, g, A.resBuf);
+      const g = clamp01(strength * 1.05) * A.tracker.trust;
+      E.retargetResidual(A.head, null, A.tracker.residual, g, A.resBuf, A.axes);
       for (let i = 0; i < 478 * 3; i++) A.tgtBuf[i] += A.resBuf[i];
     }
     A.deltaExpr.set(A.tgtBuf.subarray(0, 478 * 3));   // expression without the sculpt
@@ -497,7 +582,9 @@
         depthGain: num('dp', 1.3) - 1,
         deltaCanonical: composeDelta(P.dt),
         jawOpen: clamp01(nz(A.actions.j) * 1.4),
+        jawAngle: A.jawAngle,
         jawMeshGain: 1,
+        lift: A.mouth.lift * 0.1,
         limits: chk('lim'), shade: num('fs', 0.35), hairGain: num('hs', 0.6),
         gaze: A.gaze, gazeGain: num('gg', 1.9), lid: A.lid, tongue: A.tongue,
         vis: num('tv', 0.4), bright: num('tb', 1.15), warmth: num('tw', 0),

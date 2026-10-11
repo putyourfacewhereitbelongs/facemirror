@@ -295,6 +295,49 @@ ok('teeth/tongue outputs stay finite', [tongueFrame.dbg.mouth.h, tongueFrame.dbg
   tongueFrame.dbg.mouth.lowerAlpha, ses.jaw].every(Number.isFinite));
 T.preset('Neutral');
 
+/* =====================================================================
+   the webcam mouth: the driver's own lips
+   =====================================================================
+   The mouth is owned by whichever source is live.  With the preset set to
+   `live` that is the camera — blendshapes for the jaw, the tracker's own
+   lip geometry for everything else — and it must respond to a jaw
+   blendshape and stay shut when the detector reports nothing at all.   */
+section('webcam mouth');
+T.preset('live');
+const app0 = T.state();
+app0.cam = new dom.Canvas(CAM_W, CAM_H); dom.allCanvases.add(app0.cam);
+app0.camOn = true;
+let camT = 1e6;
+const drive = (cats, n) => {
+  let f = null;
+  for (let i = 0; i < n; i++) {
+    camT += 1000 / 60;
+    T.setCamera(camFrame(0, 0, 0, camT), CAM_W, CAM_H, camT);
+    T.signals({ faceLandmarks: [camFrame(0, 0, 0, camT)], faceBlendshapes: [{ categories: cats }] });
+    dom.setClock(camT);
+    f = T.frame(camT, 1 / 60, true);
+  }
+  return f;
+};
+/* `T.state()` hands back the live object, so every reading is a copy */
+const shut = drive([], 80);                       // the negative control
+const shutMouth = { ...T.state().mouth };
+const jawed = drive([{ categoryName: 'jawOpen', score: 1 }], 80);
+const jawMouth = { ...T.state().mouth };
+ok('a jaw blendshape opens the puppet mouth',
+   jawMouth.open > 0.35 && jawed.dbg.mouth.h > 0.3 && T.state().jawAngle > 0.1,
+   `open ${shutMouth.open.toFixed(3)} -> ${jawMouth.open.toFixed(3)}; envelope ${jawed.dbg.mouth.h.toFixed(3)}; jaw ${T.state().jawAngle.toFixed(3)} rad`);
+ok('an empty blendshape list leaves the mouth shut',
+   shutMouth.open < 0.10 && shut.dbg.mouth.h < 0.10,
+   `open ${shutMouth.open.toFixed(3)}; envelope ${shut.dbg.mouth.h.toFixed(3)}`);
+const puckered = drive([{ categoryName: 'mouthPucker', score: 1 }], 80);
+const puckerMouth = { ...T.state().mouth };
+ok('a pucker blendshape narrows the puppet mouth', puckerMouth.narrow > 0.2,
+   `narrow ${puckerMouth.narrow.toFixed(3)} wide ${puckerMouth.wide.toFixed(3)}`);
+drive([], 40);
+T.preset('Neutral');
+app0.camOn = false; app0.cam = null;
+
 section('interaction');
 const pc = dom.byId.get('puppet'), pcCtx = pc.getContext('2d'), app = T.state();
 const rack = dom.byId.get('sculptTools');

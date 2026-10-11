@@ -40,7 +40,7 @@ import { Scalar, Gate, OneEuroField, Confidence, PeakTracker, smoothK } from './
 import { rasterizePolygon, dilateMask, inpaintPlate } from './plate.js';
 import { fitArch } from './mouth.js';
 import { prepIris, gazeRaw } from './eyes.js';
-import { drawDriverOverlay } from './render.js';
+import { drawDriverOverlay } from './warp.js';
 import { createScratch, pointView, renderFrame } from './frame.js';
 import { AudioEngine, bandsToViseme, BANDS } from './audio.js';
 import { Recorder, saveCanvasPNG, download } from './capture.js';

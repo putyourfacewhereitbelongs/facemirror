@@ -48,6 +48,184 @@
   const LIDS = { L: { up: [159, 158, 160, 161, 157], lo: [145, 153, 144, 154, 163], ic: 133, oc: 33 },
                  R: { up: [386, 385, 387, 388, 384], lo: [374, 380, 373, 381, 390], ic: 362, oc: 263 } };
   const EYE_RING = { L: LEYE, R: REYE };
+
+  /* ------------------------------------------------------------------
+     Mouth topology.  Four curves describe a mouth and each of them runs
+     left inner corner -> right inner corner, so index k of any curve is
+     the same place on the mouth: the four can be paired, resampled and
+     interpolated against each other without any per-landmark bookkeeping.
+       upOut/loOut  the vermilion border (where lip meets skin)
+       upIn /loIn   the inner lip (the aperture rim)
+     ------------------------------------------------------------------ */
+  const LIP_SETS = {
+    upOut: [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291],
+    loOut: [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291],
+    upIn: [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308],
+    loIn: [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308]
+  };
+  /* outer lip ring (clockwise) — the clip for the lip shell */
+  const MOUTH_RING = LIPS_O;
+  /* every landmark the mouth field is allowed to touch, plus the skin just
+     around the mouth so the field cannot tear at its own boundary */
+  const MOUTH_SKIN = [164, 165, 167, 92, 186, 57, 43, 106, 182, 83, 18, 313, 406, 335, 273, 287,
+    410, 322, 391, 193, 168, 6, 197, 195, 5, 4, 1, 19, 94, 2, 98, 327, 129, 358, 218, 438,
+    175, 199, 200, 152, 148, 176, 149, 150, 136, 377, 400, 378, 379, 365, 397, 288, 361, 323, 454, 234,
+    50, 280, 205, 425, 118, 347, 101, 330, 100, 329, 36, 266, 142, 371, 203, 423, 206, 426, 216, 436];
+  const MOUTH_IDS = (() => {
+    const s = new Set(MOUTH_SKIN);
+    for (const k in LIP_SETS) for (const i of LIP_SETS[k]) s.add(i);
+    for (const i of LIPS_O) s.add(i);
+    for (const i of LIPS_I) s.add(i);
+    return [...s].sort((a, b) => a - b);
+  })();
+  const isLip = i => LIPS_I.indexOf(i) >= 0 || LIPS_O.indexOf(i) >= 0 ||
+    LIP_SETS.upIn.indexOf(i) >= 0 || LIP_SETS.loIn.indexOf(i) >= 0;
+
+  /* ------------------------------------------------------------------
+     Mouth measurements.  Everything is normalised by the mouth's own
+     width so the same numbers describe a small mouth and a wide one, and
+     so a webcam mouth can be compared with a photo mouth that is a
+     different size.  This is what makes the photo's mouth mimic the
+     driver's mouth instead of merely opening by a fixed amount.
+     ------------------------------------------------------------------ */
+  function mouthModel(P) {
+    const a = P[61], b = P[291], ui = P[13], lo = P[14];
+    const w = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1e-6;
+    const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    const ctr = [(ui[0] + lo[0]) / 2, (ui[1] + lo[1]) / 2];
+    const deep = Math.hypot(ui[0] - lo[0], ui[1] - lo[1]);
+    return {
+      w, mid, ctr, deep,
+      open: deep / w,                                  // aperture, in mouth widths
+      tiltL: (mid[1] - a[1]) / w, tiltR: (mid[1] - b[1]) / w,
+      tilt: ((mid[1] - a[1]) + (mid[1] - b[1])) / (2 * w),   // + = corners above centre (smile)
+      asym: ((mid[1] - a[1]) - (mid[1] - b[1])) / w,         // + = left corner higher (smirk)
+      proj: ((ui[2] + lo[2]) - (a[2] + b[2])) / (2 * w),     // + = lips pushed forward
+      thickUp: (P[0][1] - ui[1]) / w, thickLo: (lo[1] - P[17][1]) / w,
+      ang: Math.atan2(b[1] - a[1], b[0] - a[0])
+    };
+  }
+  /* current mouth vs neutral mouth -> the driver's mouth shape, as a small
+     set of independent, smoothed, unit-free numbers.                   */
+  function mouthFeatures(cur, neu) {
+    const s = (x, sc) => clamp(x / (sc || 1), -2.2, 2.2);
+    const ratio = cur.w / (neu.w || 1);
+    return {
+      open: s(cur.open - neu.open, 0.42),               // parted lips
+      wide: s(ratio - 1, 0.26),                         // stretched wide
+      narrow: s(1 - ratio, 0.26),                       // gathered in
+      lift: s(cur.tilt - neu.tilt, 0.09),               // smile / frown at the corners
+      asym: s(cur.asym - neu.asym, 0.09),               // one-sided smirk
+      push: s(cur.proj - neu.proj, 0.07),               // lips pushed forward (pucker)
+      rollUp: s(cur.thickUp / (neu.thickUp || 1) - 1, 0.45),
+      rollLo: s(cur.thickLo / (neu.thickLo || 1) - 1, 0.45)
+    };
+  }
+  const zeroMouth = () => ({ open: 0, wide: 0, narrow: 0, lift: 0, asym: 0, push: 0, rollUp: 0, rollLo: 0 });
+
+  /* ------------------------------------------------------------------
+     The mouth field.  One field drives every mouth landmark, whichever
+     source is active — the parametric actions (presets, mic visemes) or
+     the webcam's own lip geometry.  It is applied in canonical head space,
+     so the mouth keeps its shape while the head turns, exactly like the
+     rest of the face.
+     ------------------------------------------------------------------ */
+  function mouthDelta(head, F, out) {
+    const d = out || new Float32Array(478 * 3);
+    d.fill(0);
+    if (!F) return d;
+    const m = head.mouth || (head.mouth = mouthModel(head.P));
+    const half = m.w * 0.5, cx = m.mid[0], cy = m.ctr[1];
+    const open = clamp(F.open, -0.35, 1.8);
+    const wide = clamp(F.wide, -0.6, 2.2);
+    const narrow = clamp(F.narrow, -0.6, 1.6);
+    const lift = clamp(F.lift, -2.2, 2.2);
+    const asym = clamp(F.asym, -1.6, 1.6);
+    const push = clamp(F.push, -0.8, 2.2);
+    /* `open` above 1 means the jaw is wide; the extra beyond the lip roll
+       is carried by applyJaw, so the lips themselves only part so far. */
+    const gap = clamp(open, -0.2, 1) * m.w * 0.30;
+    const jawExtra = clamp(open - 1, 0, 0.8) * m.w * 0.30;
+    for (let n = 0; n < MOUTH_IDS.length; n++) {
+      const i = MOUTH_IDS[n];
+      const p = head.P[i];
+      const u = clamp((p[0] - cx) / half, -1.6, 1.6);
+      const v = (p[1] - cy) / m.w;
+      const lip = isLip(i);
+      /* Region weight.  The lip ring moves exactly as commanded; the skin
+         around it follows a short way and then stops — the philtrum
+         especially, which in a real face does not rise with the mouth and
+         in a photograph only smears if it is moved.  `dv` is the distance
+         from the lip ring, so the falloff starts *outside* the lips.   */
+      let reg = 1;
+      if (!lip) {
+        const dv = Math.max(0, Math.abs(v) - 0.085);
+        const k = v < 0 ? 26 : 9;                    // the philtrum barely moves
+        reg = Math.exp(-(u * u * 0.34 + dv * dv * k));
+      } else {
+        reg = 1 - 0.25 * clamp01((Math.abs(u) - 0.86) / 0.14);   // the corners ease off
+      }
+      if (reg < 0.02) continue;
+      const isUp = p[1] < cy;
+      const au = Math.min(1, Math.abs(u));
+      const pu = 1 - 0.30 * au * au;                   // the centre of the lip travels furthest
+      const cornerP = clamp01((au - 0.45) / 0.55);     // 1 at the corners
+      let dx = 0, dy = 0, dz = 0;
+      /* 1. part the lips.  The inner (vermilion) lip rolls open fully, the
+         outer border follows at about half, and the aperture is widest at
+         the centre — exactly how a real mouth opens.                    */
+      if (open > 0 || jawExtra > 0) {
+        /* The aperture rim travels; the vermilion border — the edge of the
+           lip that meets the skin — barely does.  Moving the whole lip is
+           what smears a photograph: the pixels between the lip and the
+           chin get dragged down the face.  Splitting the two rings keeps
+           the photographed lip where it is and lets the drawn mucosa
+           cover the strip that opens between them.                    */
+        const inner = LIP_SETS.upIn.indexOf(i) >= 0 || LIP_SETS.loIn.indexOf(i) >= 0;
+        const roll = !lip ? 0.20 : (isUp ? (inner ? 0.34 : 0.14) : (inner ? 0.82 : 0.26));
+        const part = gap + jawExtra * (isUp ? 0.18 : 0.82);
+        dy += (isUp ? -1 : 1) * part * roll * pu * reg;
+      } else if (open < 0) {
+        /* pressing the lips together: they thin and tuck slightly */
+        const press = -open;
+        dy += (isUp ? 1 : -1) * press * m.w * 0.10 * (lip ? 1 : 0.3) * pu * reg;
+      }
+      /* 2. spread (spread lips / consonant stretch) and gather (pucker) */
+      dx += u * half * (wide * 0.55 * (0.45 + 0.55 * cornerP) - narrow * 0.34 * (1 - 0.4 * cornerP)) * reg;
+      /* 3. corner lift: smile up, frown down; `asym` lets one corner lead
+         (a smirk), and the lift fades toward the centre of the lip.     */
+      const lead = 1 + asym * (u >= 0 ? 1 : -1) * 0.8;
+      dy -= (lift * lead) * m.w * 0.16 * (0.30 + 0.70 * cornerP) * reg;
+      /* 4. pucker: lips push forward, thin and round outward */
+      dz += (push * 0.85 + narrow * 0.55) * m.w * 0.34 * pu * reg;
+      dy += (push * 0.10 + narrow * 0.06) * m.w * (isUp ? -1 : 1) * pu * reg;
+      /* 5. lip roll: a raised upper lip shows more vermilion, a pout everts
+         the lower lip.  Implemented as a normal-direction shift.        */
+      const rollUp = clamp(F.rollUp || 0, -1.2, 1.2), rollLo = clamp(F.rollLo || 0, -1.2, 1.2);
+      if (lip && (rollUp || rollLo)) {
+        const s = isUp ? rollUp : rollLo;
+        dy += (isUp ? -1 : 1) * s * m.w * 0.06 * (1 - 0.5 * au) * reg;
+      }
+      const g3 = i * 3;
+      d[g3] += dx; d[g3 + 1] += dy; d[g3 + 2] += dz;
+    }
+    return d;
+  }
+  /* how far the jaw should drop for a given mouth opening (radians).  A
+     human jaw reaches roughly 24° for a wide open mouth; the rest of the
+     aperture is lip roll.  */
+  const JAW_MAX = 0.42;
+  const jawAngleFor = openF => clamp(openF, -0.2, 1.6) * JAW_MAX;
+  /* the mouth's own frame (corners, aperture, width) measured on whichever
+     set of points is being drawn — canonical or already deformed */
+  const mouthFrame3 = (head, P) => {
+    if (!P || !P[61] || !P[291] || !P[13] || !P[14]) return null;
+    const a = P[61], b = P[291], ui = P[13], lo = P[14];
+    const w = Math.hypot(b[0] - a[0], b[1] - a[1]) || head.fw * 0.3;
+    return { w, mid: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], ctr: [(ui[0] + lo[0]) / 2, (ui[1] + lo[1]) / 2],
+             deep: Math.hypot(ui[0] - lo[0], ui[1] - lo[1]) };
+  };
+
   /* 3D eyeball centres come from the mesh's inner-corner + iris ring */
   const IRIS = { L: { c: 468, ring: [469, 470, 471, 472] }, R: { c: 473, ring: [474, 475, 476, 477] } };
   /* rigid subset — forehead, brow ridge, nose bridge, temples.  These
@@ -72,19 +250,23 @@
 
   const EXPR_GAIN = i => {
     if (i >= 468) return 0;                              // irises are rigid
-    if (LIPS_I.includes(i) || LIPS_O.includes(i)) return 1.0;
-    if (UP_LIP.includes(i) || LO_LIP.includes(i)) return 1.0;
+    /* The mouth owns its own driver (mouthDelta): the raw residual is only
+       allowed a light touch there, otherwise the two would add up and the
+       lips would overshoot the driver's mouth.                        */
+    if (isLip(i)) return 0.22;
     if (LIDS.L.up.includes(i) || LIDS.L.lo.includes(i) || LIDS.R.up.includes(i) || LIDS.R.lo.includes(i)) return 1.0;
     if (LEYE.includes(i) || REYE.includes(i)) return 0.9;
-    if (LBROW.includes(i) || RBROW.includes(i)) return 0.85;
+    /* Brows carry expression, not pose.  Leaving them at full weight made a
+       raised brow read as a head pitch, so they are damped here.        */
+    if (LBROW.includes(i) || RBROW.includes(i)) return 0.55;
     if (NOSE.includes(i)) return 0.5;
     if (RIGID_W(i) <= 0.15) return 0.25;
     return 0.45;                                          // cheeks
   };
   /* per-landmark anatomical cap for a single expression delta, in face widths */
   const EXPR_CAP = i => {
-    if (LIPS_I.includes(i) || LIPS_O.includes(i)) return 0.16;
-    if (UP_LIP.includes(i) || LO_LIP.includes(i)) return 0.13;
+    if (LIPS_I.includes(i) || LIPS_O.includes(i)) return 0.055;
+    if (isLip(i)) return 0.045;
     if (LBROW.includes(i) || RBROW.includes(i)) return 0.12;
     return 0.07;
   };
@@ -322,24 +504,34 @@
       const sm = side ? A.sR : A.sL;
       const v = (p[1] - eyeY) / fh;
       let dx = 0, dy = 0, dz = 0;
-      /* ---- mouth ---------------------------------------------------- */
+      /* ---- mouth -----------------------------------------------------
+         The lip landmarks themselves are owned by mouthDelta(), which is
+         the single place a mouth shape is decided (preset, mic viseme or
+         webcam geometry).  What is left here is the *skin* around the
+         mouth: the nasolabial fold and the chin, which pull up with a
+         smile and down with a frown.  Keeping these apart is what stops
+         the mouth from being driven twice and ballooning.             */
       const mouthMask = Math.exp(-(((p[0] - cx) / (fw * 0.55)) ** 2) - ((p[1] - yMouth) / (fh * 0.22)) ** 2);
-      if (mouthMask > 0.004) {
-        const lift = clamp01((v - 0.05) / 0.4);          // 0 at the vermilion, 1 at the chin
-        const up = 1 - lift;
-        const smileAmt = sm * mouthMask;
-        dy += (-smileAmt * fh * 0.20 * au * au * up - A.fr * fh * 0.16 * au * au * up);
-        dx += u * (smileAmt * 0.09 + A.st * 0.14) * fw * au * mouthMask;
-        dy += A.ur * fh * 0.10 * up * (1 - au * 0.5);
-        dz += (A.eo * 0.35 + A.pk * 0.55) * fw * 0.06 * mouthMask;
-        /* pucker: lips gather toward the mouth axis and curl outward */
-        const pk = A.pk * mouthMask;
-        dx -= u * fw * 0.30 * pk * 0.55;
-        dy -= 0;
+      if (mouthMask > 0.004 && !isLip(i)) {
+        const below = clamp01((p[1] - yMouth) / (fh * 0.30));   // 0 at the lip line, 1 at the chin
+        const auu = au * au;
+        const smile = sm * mouthMask;
+        /* the corner pulls the skin up; the chin and the fold below the lip
+           are pushed the other way, the way a real smile compresses them */
+        dy -= (smile * 0.10 + A.fr * 0.075) * fh * 0.34 * auu * (1 - 0.55 * below) * mouthMask;
+        dy += (smile * 0.05 + A.ck * 0.03) * fh * 0.34 * below * mouthMask;
+        dx += (u * (smile * 0.10 + A.st * 0.10)) * fw * 0.16 * auu * mouthMask;
+        dz += (A.ck * 0.4 + Math.max(A.pk, 0) * 0.5) * fw * 0.05 * mouthMask;
+        dy -= A.ur * fh * 0.055 * (1 - below) * mouthMask;
       }
-      /* ---- cheeks / lower lids -------------------------------------- */
+      /* ---- cheeks / lower lids --------------------------------------
+         The cheek field has to stop before the lips: its Gaussian reaches
+         the mouth, and a smiling cheek dragging both lips upward was
+         exactly what kept the mouth shut.  Everything inside the mouth
+         region belongs to mouthDelta(), and nowhere else.            */
+      const mouthReg = Math.exp(-(((p[0] - cx) / (fw * 0.30)) ** 2) - (((p[1] - yMouth) / (fh * 0.115)) ** 2));
       const cheek = Math.exp(-(((Math.abs(p[0] - cx) - fw * 0.34) / (fw * 0.3)) ** 2) -
-                             (((p[1] - (eyeY + fh * 0.30)) / (fh * 0.22)) ** 2));
+                             (((p[1] - (eyeY + fh * 0.30)) / (fh * 0.22)) ** 2)) * (1 - mouthReg);
       if (cheek > 0.004) {
         dy -= sm * fh * 0.07 * cheek + A.ck * fh * 0.05 * cheek;
         dx += SD(p[0] - cx) * sm * fw * 0.035 * cheek;
@@ -384,22 +576,52 @@
     return { residual: new Float32Array(478 * 3), mix: new Float32Array(478) };
   }
   /* residual (canonical units) -> photo delta, region gains + caps.
+     The driver's face is a different size and shape from the photo's, so a
+     single isotropic gain is wrong: it makes a small photo mouth overshoot
+     and a large one barely move.  `scale` therefore carries the three
+     axis factors measured from the two faces' own geometry, and every
+     delta is scaled before it is capped, not after.
      `out` lets the caller reuse one buffer (no per-frame allocation).  */
-  function retargetResidual(head, T, resid, gain, out) {
+  function retargetResidual(head, T, resid, gain, out, axes) {
     const d = out || new Float32Array(478 * 3);
     d.fill(0);
-    const cap0 = head.fw * 0.25;
+    /* The residual arrives in *driver face widths* (trackerUpdate divides
+       the driver's pixels by its own face width).  The photo is a different
+       face in different pixels, so the units have to be converted here:
+       one driver face width == one photo face width.  Scaling by the
+       photo's face width is what actually makes a webcam mouth move a
+       photo mouth; without it every expression arrived ~13x too small and
+       the puppet looked like it was ignoring the driver.               */
+    const fx = head.fw * (axes && isFinite(axes[0]) ? axes[0] : 1);
+    const fy = head.fw * (axes && isFinite(axes[1]) ? axes[1] : 1);
+    const fz = head.fw * (axes && isFinite(axes[2]) ? axes[2] : 1);
+    const mw = head.mouth ? head.mouth.w : head.fw * 0.31;
+    const lipCap = Math.max(mw * 0.22, head.fw * 0.03);
     for (let i = 0; i < 478; i++) {
       const g = EXPR_GAIN(i) * gain;
       if (g <= 0) continue;
       const g3 = i * 3;
-      let x = resid[g3] * g, y = resid[g3 + 1] * g, z = resid[g3 + 2] * g;
+      let x = resid[g3] * g * fx, y = resid[g3 + 1] * g * fy, z = resid[g3 + 2] * g * fz;
+      const lip = isLip(i);
+      const cap = lip ? lipCap : Math.max(head.fw * 0.02, head.fw * EXPR_CAP(i));
       const n = Math.hypot(x, y, z);
-      const cap = Math.max(cap0, head.fw * EXPR_CAP(i) * 3);
       if (n > cap) { const k = cap / n; x *= k; y *= k; z *= k; }
       d[g3] = x; d[g3 + 1] = y; d[g3 + 2] = z;
     }
     return d;
+  }
+  /* Anisotropy between the driver's face and the photo's.  Unit conversion
+     is isotropic (face width -> face width), but faces differ in aspect:
+     a photo whose face is proportionally taller than the driver's needs a
+     matching vertical factor, or vertical expression travels too little
+     (long face) or too far (wide face).  One number, lightly clamped.  */
+  function fitAxes(head, driver) {
+    const dw = driver && driver.fw > 1e-6 ? driver.fw : 0;
+    if (!dw || !(head.fw > 0)) return [1, 1, 1];
+    const photoAspect = head.fh / head.fw;
+    const driverAspect = (driver.fh || dw * 1.35) / dw;
+    const y = clamp(photoAspect / (driverAspect || 1e-6), 0.72, 1.45);
+    return [1, y, 1];
   }
   /* expression energy of a residual — used for the tracker trust gate */
   function residualEnergy(resid, n) {
@@ -438,11 +660,24 @@
     if (i === 152 || i === 148 || i === 176 || i === 149 || i === 150 || i === 136 || i === 377 || i === 400 ||
         i === 378 || i === 379 || i === 365 || i === 397 || i === 288 || i === 361 || i === 323 || i === 454 ||
         i === 17 || i === 0 || i === 18 || i === 200 || i === 199 || i === 175) return 1;
-    return 0.15;
+    /* The rest of the face.  The mandible's influence fades out above the
+       mouth: a blanket weight here used to drag the nose, the lids and the
+       brows down with the jaw, and on a photograph that reads as the whole
+       face sliding rather than a mouth opening.  Below the mouth it ramps
+       up to the jawline, which the list above holds at full weight.   */
+    const midY = (head.P[13][1] + head.P[14][1]) * 0.5;
+    const above = (midY - head.P[i][1]) / (head.fh * 0.16);   // 1 at the base of the nose
+    if (above > 0) { const k = 1 - clamp01(above); return 0.30 * k * k; }
+    return clamp(0.30 - above * 1.6, 0, 1);
   };
+  /* `angle` > 0 opens the mouth: the mandible swings DOWN (+y in image
+     space) and BACK (-z, away from the viewer) about the hinge.  The sign
+     matters — rotating the other way around this axis lifts the chin and
+     pulls the lower lip up over the teeth, which is the difference between
+     a mouth that opens and a mouth that only pretends to.            */
   function applyJaw(head, pts, angle, axis) {
     if (Math.abs(angle) < 1e-4) return;
-    const R = m3.fromAxisAngle(axis.dir, angle);
+    const R = m3.fromAxisAngle(axis.dir, -angle);
     for (let i = 0; i < 478; i++) {
       const w = jawWeight(i, head);
       if (w <= 0) continue;
@@ -474,6 +709,11 @@
       residPrev: new Float32Array(478 * 3),
       scale: 1, ox: 0, oy: 0,
       ypr: { yaw: 0, pitch: 0, roll: 0 },
+      mouthF: zeroMouth(),        // smoothed-able driver mouth shape
+      mouthNeu: null,             // driver mouth at neutral (face widths)
+      mouthCur: null,
+      driverAspect: 1.35,
+      free: null,
       yprF: {
         yaw: oneEuro(o.yawFc || 1.5, o.yawBeta || 0.055, 1),
         pitch: oneEuro(o.pitchFc || 1.2, o.pitchBeta || 0.045, 1),
@@ -516,6 +756,15 @@
     S.knee = k;
     S.neutralCtr = ctr;
     S.neutralAt = performance_now();
+    /* The driver's own neutral mouth and face proportions, measured in
+       face widths so they can be compared with any photo.  These are what
+       let the photo's mouth mimic this specific driver's mouth rather
+       than simply opening by a fixed amount.                           */
+    S.mouthNeu = mouthModel(S.neutral);
+    S.driverAspect = (Math.hypot(S.neutral[152][0] - S.neutral[10][0], S.neutral[152][1] - S.neutral[10][1]) || 1.35)
+      / (Math.hypot(S.neutral[454][0] - S.neutral[234][0], S.neutral[454][1] - S.neutral[234][1]) || 1);
+    S.mouthF = zeroMouth();
+    S.free = new Array(478);
   }
   function performance_now() { return (root.performance && root.performance.now) ? root.performance.now() : Date.now(); }
   /* One tracker frame. Returns true when a fresh pose was produced. */
@@ -542,13 +791,26 @@
     /* ---- expression residual = rigid-removed difference --------------- */
     const Ri = m3.t(f.R);
     const k = c.exprGain === undefined ? 1 : c.exprGain;
+    const free = S.free || (S.free = new Array(478));
     for (let i = 0; i < 478; i++) {
       const a = v3.sub(Cf[i], f.cb);
       const b = m3.mv(Ri, a);
       const g3 = i * 3;
-      S.residual[g3] = (b[0] / f.s - n[i][0]) * k;
-      S.residual[g3 + 1] = (b[1] / f.s - n[i][1]) * k;
-      S.residual[g3 + 2] = (b[2] / f.s - n[i][2]) * k;
+      const px = b[0] / f.s, py = b[1] / f.s, pz = b[2] / f.s;
+      free[i] = [px, py, pz];
+      S.residual[g3] = (px - n[i][0]) * k;
+      S.residual[g3 + 1] = (py - n[i][1]) * k;
+      S.residual[g3 + 2] = (pz - n[i][2]) * k;
+    }
+    /* ---- the driver's mouth, pose and scale removed -------------------
+       Measured on `free`, so turning the head or leaning in does not read
+       as a mouth shape; the result is impossible to confuse with pose. */
+    if (S.mouthNeu) {
+      S.mouthCur = mouthModel(free);
+      const mf = mouthFeatures(S.mouthCur, S.mouthNeu);
+      /* a face that is half out of frame reports nonsense: hold the last
+         good mouth rather than jumping */
+      if (Math.abs(mf.open) < 2.2) S.mouthF = mf;
     }
     /* ---- pose -> yaw/pitch/roll, per-axis gain, soft limits ---------- */
     const e = eulerFromQuat(quatFromMat(f.R));
@@ -584,6 +846,10 @@
     S.oy = slew(S.oy, 0, dt, 0.5, 0.5);
     S.scale = slew(S.scale, 1, dt, 0.35, 0.35);
     for (let i = 0; i < S.residual.length; i++) S.residual[i] = slew(S.residual[i], 0, dt, 0.6, 0.6);
+    /* the mouth relaxes to a closed, neutral shape instead of freezing
+       half open the moment the tracker loses the face */
+    const mf = S.mouthF;
+    if (mf) for (const key in mf) mf[key] = slew(mf[key], 0, dt, 1.6, 1.1);
   }
 
   /* ===================================================================
@@ -668,8 +934,11 @@
     lx, ly, lz,
     OVAL, CONTOUR, LEYE, REYE, LBROW, RBROW, LIPS_O, LIPS_I, NOSE, UP_LIP, LO_LIP, LIDS, IRIS, EYE_RING,
     RIGID, RIGID_W, EXPR_GAIN, EXPR_CAP, ACTIONS,
+    /* mouth */
+    LIP_SETS, MOUTH_RING, MOUTH_IDS, MOUTH_SKIN, isLip,
+    mouthModel, mouthFeatures, zeroMouth, mouthDelta, jawAngleFor, JAW_MAX, mouthFrame3,
     /* geometry */
-    buildCanonical, buildMesh, faceCenterOf, localUV, tmjAxis, jawWeight, applyJaw,
+    buildCanonical, buildMesh, faceCenterOf, localUV, tmjAxis, jawWeight, applyJaw, fitAxes,
     /* expression */
     zeroActions, PRESETS, talkAt, expressionDelta, mouthState, makeTransfer, retargetResidual, residualEnergy,
     /* tracking */

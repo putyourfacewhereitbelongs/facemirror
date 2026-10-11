@@ -12,7 +12,7 @@ import { buildRig } from './model.js';
 import { createPoseState, buildDragField, poseFrame } from './pose.js';
 import { RFromEuler } from './math3d.js';
 import { createScratch, pointView, renderFrame, drawFX, boxAround } from './frame.js';
-import { unfold, signedArea, warpTri } from './render.js';
+import { unfold, signedArea, warpTri } from './warp.js';
 import { fitArch } from './mouth.js';
 import { prepIris } from './eyes.js';
 import { SHOWN, LIP, EYE } from './landmarks.js';

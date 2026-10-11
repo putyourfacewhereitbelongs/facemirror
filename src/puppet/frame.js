@@ -22,7 +22,7 @@ import { clamp, lerp } from './math3d.js';
 import { OVAL, EYE, LIP, IBUG68 } from './landmarks.js';
 import { fitArch, archTeeth, gumBand, tongueGeom, drawMouth, drawLips, drawTongue, innerMouth, outerMouth, polyPath } from './mouth.js';
 import { drawIris, drawEyelid } from './eyes.js';
-import { drawMesh, drawShading, drawSeam, enhanceROIs, drawLandmarks } from './render.js';
+import { drawMesh, drawShading, drawSeam, enhanceROIs, drawLandmarks } from './warp.js';
 import { shadeField, eyeVisibility } from './pose.js';
 
 /** Scratch buffers reused across frames (never reallocated per frame). */

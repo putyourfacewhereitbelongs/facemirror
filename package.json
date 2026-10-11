@@ -1,14 +1,20 @@
 {
-  "name": "facemirror-studio",
+  "name": "facemirror",
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "description": "FaceMirror: webcam-driven 2.5D portrait puppet (MediaPipe 478-point mesh, rigid head pose, procedural oral cavity) plus the optional React/Vite studio workspace.",
   "scripts": {
-    "dev": "vite --host 0.0.0.0",
-    "build": "tsc -b && vite build",
-    "test": "vitest run",
-    "verify": "npm run test && npm run build && python3 -m py_compile backend/server.py",
-    "preview": "vite preview --host 0.0.0.0"
+    "dev": "node tools/build.mjs && node tools/serve.mjs",
+    "build": "node tools/build.mjs",
+    "check": "node tools/build.mjs --check",
+    "verify": "node tools/verify.mjs",
+    "harness": "node tools/build.mjs && node tools/harness.mjs",
+    "test": "node tools/build.mjs --check && node tools/verify.mjs && node tools/harness.mjs",
+    "serve": "node tools/serve.mjs",
+    "studio:dev": "vite --host 0.0.0.0",
+    "studio:build": "tsc -b && vite build",
+    "studio:test": "vitest run"
   },
   "dependencies": {
     "@mediapipe/face_mesh": "^0.4.1633559619",
@@ -25,25 +31,5 @@
     "typescript": "^5.7.2",
     "vite": "^6.0.7",
     "vitest": "^5.0.3"
-  },
-  "allowScripts": {
-    "esbuild@0.25.12": true,
-    "protobufjs@7.6.6": true
-  "name": "facemirror",
-  "private": true,
-  "version": "1.0.0",
-  "type": "module",
-  "description": "FaceMirror: webcam-driven 2.5D portrait puppet (MediaPipe 478-point mesh, rigid head pose, procedural oral cavity).",
-  "scripts": {
-    "build": "node tools/build.mjs",
-    "check": "node tools/build.mjs --check",
-    "verify": "node tools/verify.mjs",
-    "harness": "node tools/build.mjs && node tools/harness.mjs",
-    "test": "node tools/build.mjs --check && node tools/verify.mjs && node tools/harness.mjs",
-    "dev": "node tools/build.mjs && node tools/serve.mjs",
-    "serve": "node tools/serve.mjs"
-  },
-  "dependencies": {
-    "delaunator": "^5.0.1"
   }
 }

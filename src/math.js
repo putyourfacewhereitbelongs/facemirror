@@ -512,6 +512,54 @@
     }
     return out;
   }
+  /* open Catmull-Rom through pts (no wrap-around), resampled to `samples`
+     points.  The lip curves are open: a closed spline would bow the mouth
+     corners toward each other, which is exactly where they must not move. */
+  function splineOpen(pts, samples) {
+    const n = pts ? pts.length : 0;
+    if (n < 2) return n === 1 ? [xy2(pts[0]).slice(0, 2)] : [];
+    const at = i => xy2(pts[clamp(i, 0, n - 1)]);
+    const out = [];
+    const segs = n - 1, per = Math.max(2, Math.round((samples || n * 4) / segs));
+    for (let i = 0; i < segs; i++) {
+      const p0 = at(i - 1), p1 = at(i), p2 = at(i + 1), p3 = at(i + 2);
+      for (let k = 0; k < per; k++) {
+        const t = k / per, t2 = t * t, t3 = t2 * t;
+        out.push([
+          0.5 * ((2 * p1[0]) + (-p0[0] + p2[0]) * t + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3),
+          0.5 * ((2 * p1[1]) + (-p0[1] + p2[1]) * t + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
+        ]);
+      }
+    }
+    const last = at(n - 1);
+    out.push([last[0], last[1]]);
+    return out;
+  }
+  /* resample a curve to exactly `count` points, parameterised along its
+     arc length — used to line the two lips up by screen position rather
+     than by landmark index (MediaPipe's lip spacing is not uniform).   */
+  function resampleCurve(pts, count) {
+    const src = (pts || []).map(p => xy2(p));
+    const n = src.length;
+    if (n < 2 || count < 2) return src.slice(0, Math.max(0, count));
+    const seg = [0], cum = [0];
+    let total = 0;
+    for (let i = 1; i < n; i++) {
+      total += Math.hypot(src[i][0] - src[i - 1][0], src[i][1] - src[i - 1][1]);
+      cum.push(total);
+    }
+    if (!(total > 1e-9)) return new Array(count).fill(src[0]).map(p => [p[0], p[1]]);
+    const out = [];
+    let j = 1;
+    for (let k = 0; k < count; k++) {
+      const want = total * k / (count - 1);
+      while (j < n - 1 && cum[j] < want) j++;
+      const t = (want - cum[j - 1]) / ((cum[j] - cum[j - 1]) || 1e-9);
+      out.push([lerp(src[j - 1][0], src[j][0], t), lerp(src[j - 1][1], src[j][1], t)]);
+    }
+    return out;
+  }
+
   /* Catmull-Rom arc between three points, used by the tongue/teeth paths */
   function quadPoint(a, b, c, t) {
     const u = 1 - t;
@@ -549,6 +597,6 @@
     quatFromMat, matFromQuat, quatMul, quatConj, quatSlerp, quatAngle, quatSlew, quatFollow,
     quatFromYPR, eulerFromQuat, quatNorm,
     alphaFor, oneEuro, oneEuroRun, oneEuroReset, ratioTracker, ratioTrack,
-    polyArea, polyOK, bounds, splineClosed, quadPoint, triArea2, pointInPoly, polylineWeight
+    polyArea, polyOK, bounds, splineClosed, splineOpen, resampleCurve, quadPoint, triArea2, pointInPoly, polylineWeight
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -78,23 +78,46 @@ export function synthFace() {
     const x = side * (0.045 + t * 0.03), y = 0.055 + t * 0.055;
     put(idx, x, y, surf(x, y) * 0.98);
   });
-  /* lips: outer ring then inner ring (holes in the shell) */
-  LIPS_O.forEach((idx, k) => {
-    const a = k <= 10 ? Math.PI * (1 - k / 10) : -Math.PI * (k - 10) / 10;
-    const x = Math.cos(a) * 0.155, y = 0.285 + Math.sin(a) * 0.058;
-    put(idx, x, y, surf(x, y) * 0.86);
-  });
-  LIPS_I.forEach((idx, k) => {
-    const angs = [Math.PI, 1.38 * Math.PI, 1.5 * Math.PI, 1.62 * Math.PI, 0, 0.38 * Math.PI, 0.5 * Math.PI, 0.62 * Math.PI];
-    const a = angs[k];
-    const x = Math.cos(a) * 0.100, y = 0.285 + Math.sin(a) * 0.004;
-    put(idx, x, y, surf(x, y) * 0.80);
-  });
+  /* lips.  MediaPipe's two lip contours are drawn with a much denser set of
+     landmarks than the 20 + 8 the app lists, and the app works with the
+     *intermediate* ones too (191/80/81/311/310/415 on the inner contour).
+     A stand-in face that leaves them scattered makes every lip curve
+     meaningless, so they are interpolated along the same ellipse. */
+  const MOUTH_Y = 0.285;
+  const lipRing = (cx, rx, ryA, ryB, wob) => (t) => {
+    /* t in [0,1): 0 = left corner, 0.5 = right corner, 1 = back at the left
+       corner: the upper half runs left -> right, the lower half right -> left */
+    const top = t < 0.5;
+    const k = top ? t * 2 : (t - 0.5) * 2;                 // 0..1 along each half
+    const a = Math.PI * (top ? 1 - k : k);
+    const ry = top ? ryA : ryB;
+    return [cx + Math.cos(a) * rx,
+            MOUTH_Y + (top ? -1 : 1) * Math.sin(a) * ry * (1 + wob * Math.sin(k * Math.PI))];
+  };
+  const putRing = (ids, path, zf) => {
+    const n = ids.length;
+    ids.forEach((idx, k) => {
+      const p = path(k / n);
+      put(idx, p[0], p[1], surf(p[0], p[1]) * zf);
+    });
+  };
+  /* outer contour, clockwise from the left corner: 61 -> over the upper
+     lip -> 291 -> under the lower lip -> back */
+  const OUTER_ORDER = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291,
+                       375, 321, 405, 314, 17, 84, 181, 91, 146];
+  putRing(OUTER_ORDER, lipRing(0, 0.155, 0.058, 0.05, 0.10), 0.86);
+  const INNER_ORDER = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308,
+                       324, 318, 402, 317, 14, 87, 178, 88, 95];
+  /* the inner ring is the aperture rim: at rest the lips touch, as they
+     do on a real face — a fixture whose neutral mouth hangs open makes
+     every "how open is the mouth" threshold read half way up          */
+  putRing(INNER_ORDER, lipRing(0, 0.128, 0.0015, 0.0018, 0.12), 0.80);
   for (const k in EXTRA) put(+k, EXTRA[k][0], EXTRA[k][1]);
   /* everything else: deterministic scatter inside the oval */
   let s = 20261007;
   const rnd = () => (s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
   const taken = new Set([...CONT, ...LIPS_O, ...LIPS_I, ...LEYE, ...REYE, ...LBROW, ...RBROW, ...NOSEB, ...NOSEA,
+    ...OUTER_ORDER, ...INNER_ORDER,
     468, 469, 470, 471, 472, 473, 474, 475, 476, 477, ...Object.keys(EXTRA).map(Number)]);
   for (let i = 0; i < 478; i++) {
     if (taken.has(i)) continue;
