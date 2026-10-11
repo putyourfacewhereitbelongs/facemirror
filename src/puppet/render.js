@@ -83,7 +83,7 @@
     let d = null;
     try { d = g.getImageData(0, 0, W, H); } catch (e) { S.cache.warp = S.src; return; }
     const src = d.data;
-    const amount = 0.40, radius = 1.4;
+    const amount = 0.42, radius = 1.5;
     /* separable gaussian, three taps either side is plenty at this radius */
     const k = [];
     let ksum = 0;
@@ -361,6 +361,50 @@
       gg2.beginPath(); gg2.arc(x, y, r, 0, 7); gg2.fill();
     }
     S.cache.grain = gc;
+    /* The warp resamples the photograph per triangle, and bilinear
+       resampling averages away one-pixel noise — which is most of what
+       skin texture is at this scale.  No amount of sharpening puts noise
+       back, and the noise that survives is mottled because it no longer
+       lines up across triangle edges.  So the render carries its own
+       grain, laid over the whole frame in screen space: opaque noise
+       around mid grey, composited with `overlay` so it darkens and
+       lightens the skin underneath, uniform and free of the warp.    */
+    const gp = makeCanvas(S.W, S.H), gp2 = gp.getContext('2d');
+    {
+      const d1 = gp2.createImageData(S.W, S.H);
+      let sd = 13579;
+      const r1 = () => (sd = (sd * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+      for (let i = 0; i < d1.data.length; i += 4) {
+        const v = 128 + (r1() - 0.5) * 120;
+        d1.data[i] = v; d1.data[i + 1] = v; d1.data[i + 2] = v; d1.data[i + 3] = 255;
+      }
+      gp2.putImageData(d1, 0, 0);
+      /* a second layer at the same one-pixel size but a different seed and
+         amplitude: one frequency of noise reads like sensor noise, two
+         superimposed read like skin.  Nothing here is coarser than a
+         pixel — coarser grain stops looking like skin and starts looking
+         like blotches.                                                    */
+      const bl = makeCanvas(S.W, S.H), bl2 = bl.getContext('2d');
+      const d2 = bl2.createImageData(S.W, S.H);
+      let sd2 = 24680;
+      const r2 = () => (sd2 = (sd2 * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+      for (let i = 0; i < d2.data.length; i += 4) {
+        const v = 128 + (r2() - 0.5) * 92;
+        d2.data[i] = v; d2.data[i + 1] = v; d2.data[i + 2] = v; d2.data[i + 3] = 255;
+      }
+      bl2.putImageData(d2, 0, 0);
+      gp2.imageSmoothingEnabled = true;
+      gp2.globalAlpha = 0.45;
+      gp2.drawImage(bl, 0, 0);
+      gp2.globalAlpha = 1;
+      /* Desaturate slightly toward mid grey so `overlay` does not tint
+         the skin as it composites.                                      */
+      gp2.globalCompositeOperation = 'saturation';
+      gp2.fillStyle = 'hsl(0,0%,50%)';
+      gp2.fillRect(0, 0, S.W, S.H);
+      gp2.globalCompositeOperation = 'source-over';
+    }
+    S.cache.grainFull = gp;
   }
   /* the photo's tone at a source position, bilinearly */
   function skinTone(S, x, y) {
@@ -1742,8 +1786,15 @@
       ctx.drawImage(S.src, 0, 0);
     } else {
       ctx.drawImage(S.layer, 0, 0);
-      /* (the warp source is pre-sharpened once in buildSharpen, so there
-         is no per-frame unsharp overlay to pay for any more)          */
+      /* the grain, over the whole frame and under everything the mouth and
+         eyes draw, so enamel and iris stay as glossy as they should be */
+      if (st.quality > 0 && S.cache.grainFull) {
+        ctx.save();
+        ctx.globalAlpha = st.quality > 1 ? 0.55 : 0.38;
+        ctx.globalCompositeOperation = 'overlay';
+        try { ctx.drawImage(S.cache.grainFull, 0, 0); } catch (e) { }
+        ctx.restore();
+      }
       /* ---- the mouth ------------------------------------------------
              One pass owns the whole mouth: cavity, tongue, both arches and
              the inner lips are ordered and lit from the same frame, so the

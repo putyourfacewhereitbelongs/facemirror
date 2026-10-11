@@ -91,6 +91,56 @@ function drawPortrait(g) {
   }
   g.fillStyle = 'rgba(90,50,40,.55)';
   for (const s of [-1, 1]) { g.beginPath(); g.ellipse(CX + s * u(0.040), CY + u(0.068), u(0.011), u(0.007), 0, 0, 7); g.fill(); }
+  /* Real skin has high-frequency texture, and the warp's blur is only
+     visible in it.  A flat gradient (which this portrait used to be) makes
+     every sharpness measurement look fine, so the fixture now carries
+     pores, fine lines and a little colour mottling — the same detail a
+     webcam frame has, and the only way to judge the skin honestly.   */
+  g.save();
+  g.beginPath(); g.ellipse(CX, CY + u(0.02), u(0.50), u(0.635), 0, 0, 7); g.clip();
+  {
+    const N = 220, nc = createCanvas(N, N), ng = nc.getContext('2d');
+    const d = ng.createImageData(N, N);
+    let seed = 987654321;
+    const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    for (let i = 0; i < d.data.length; i += 4) {
+      const v = 128 + (rnd() - 0.5) * 96;
+      d.data[i] = v; d.data[i + 1] = v; d.data[i + 2] = v; d.data[i + 3] = 255;
+    }
+    ng.putImageData(d, 0, 0);
+    const tile = createCanvas(W, H), tg = tile.getContext('2d');
+    for (let y = 0; y < H; y += N) for (let x = 0; x < W; x += N) tg.drawImage(nc, x, y);
+    g.globalCompositeOperation = 'overlay';
+    g.globalAlpha = 0.5;
+    g.drawImage(tile, 0, 0);
+    g.globalCompositeOperation = 'source-over';
+    g.globalAlpha = 1;
+    /* pores: soft little discs, and a few freckles */
+    for (let i = 0; i < 900; i++) {
+      const x = CX + (Math.random() - 0.5) * u(0.95), y = CY + (Math.random() - 0.42) * u(1.15);
+      g.fillStyle = `rgba(150,100,80,${0.05 + Math.random() * 0.07})`;
+      g.beginPath(); g.arc(x, y, 0.6 + Math.random() * 1.4, 0, 7); g.fill();
+    }
+    /* fine lines: forehead, nasolabial folds, under-eye */
+    g.strokeStyle = 'rgba(150,104,88,.24)';
+    for (let i = 0; i < 26; i++) {
+      g.lineWidth = 0.5 + Math.random() * 0.7;
+      const y = CY - u(0.34) + Math.random() * u(0.16);
+      const x0 = CX - u(0.30) + Math.random() * u(0.5);
+      g.beginPath(); g.moveTo(x0, y);
+      g.quadraticCurveTo(x0 + u(0.06), y + (Math.random() - 0.5) * u(0.02), x0 + u(0.11), y);
+      g.stroke();
+    }
+    for (const s2 of [-1, 1]) {                                  // nasolabial folds
+      g.strokeStyle = 'rgba(140,90,76,.35)';
+      g.lineWidth = 1.3;
+      g.beginPath();
+      g.moveTo(CX + s2 * u(0.14), CY + u(0.16));
+      g.quadraticCurveTo(CX + s2 * u(0.19), CY + u(0.24), CX + s2 * u(0.16), CY + u(0.31));
+      g.stroke();
+    }
+  }
+  g.restore();
   const mouthY = CY + u(0.285);                                              // lips
   /* NOLIP=1 paints the portrait *without* lips: then everything inside the
      mouth — rim, mucosa, teeth, tongue, throat — is the puppet's own work,
@@ -344,7 +394,14 @@ if (bendSheet) {
   };
   const srcC = createCanvas(W, H);
   srcC.getContext('2d').drawImage(photo, 0, 0);
+  if (process.env.SAVE_PHOTO) await writeFile(process.env.SAVE_PHOTO, srcC.toBuffer('image/png'));
   const base = lap(srcC, box);
+  console.log('per-region detail, rendered vs photo:');
+  for (const [name, bx] of [['forehead', [250, 150, 400, 220]], ['cheek', [220, 300, 330, 390]],
+                            ['eye', [250, 200, 400, 260]], ['chin', [290, 400, 360, 440]]]) {
+    const a = lap(shots[0].c, bx), b = lap(srcC, bx);
+    console.log(`  ${name.padEnd(9)} rendered ${a.toFixed(0).padStart(5)}  photo ${b.toFixed(0).padStart(5)}  ${(a / b * 100).toFixed(0)}%`);
+  }
   console.log(`source photo detail: ${base.toFixed(1)}`);
   console.log('skin detail through the bend:');
   for (const sh of shots) {
@@ -364,7 +421,9 @@ shots.forEach((s, i) => {
   if (zoomSheet || closeup || bendSheet) {                      // one big crop per frame
     const box = closeup ? [278, 286, 362, 370] : bendSheet ? [230, 200, 450, 470] : [252, 232, 400, 380];
     const zn = closeup ? 5.9 : (bendSheet ? 2.5 : 4);
-    sg.imageSmoothingEnabled = true;
+    /* nearest: a smoothed crop hides exactly the 1-pixel detail these
+       sheets exist to judge                                              */
+    sg.imageSmoothingEnabled = false;
     sg.drawImage(s.c, box[0], box[1], box[2] - box[0], box[3] - box[1],
                  x, y, (box[2] - box[0]) * zn, (box[3] - box[1]) * zn);
     return;
