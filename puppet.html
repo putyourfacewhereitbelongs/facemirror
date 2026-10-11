@@ -1962,6 +1962,23 @@ details[open]>summary::before{content:"▾"}
         }
       }
     }
+    /* how much fine detail the *photograph* has, so the grain the render
+       adds can match it: a clean studio portrait wants less than a webcam
+       frame, and both want less than nothing at all                  */
+    let detail = 0, dn = 0;
+    for (let y = 2; y < H - 2; y += 3) {
+      for (let x = 2; x < W - 2; x += 3) {
+        const o = (y * W + x) * 4;
+        const l0 = 0.299 * src[o] + 0.587 * src[o + 1] + 0.114 * src[o + 2];
+        const lx = 0.299 * src[o - 4] + 0.587 * src[o - 3] + 0.114 * src[o - 2];
+        const rx = 0.299 * src[o + 4] + 0.587 * src[o + 5] + 0.114 * src[o + 6];
+        const uy = 0.299 * src[o - W * 4] + 0.587 * src[o - W * 4 + 1] + 0.114 * src[o - W * 4 + 2];
+        const dy2 = 0.299 * src[o + W * 4] + 0.587 * src[o + W * 4 + 1] + 0.114 * src[o + W * 4 + 2];
+        detail += Math.abs(4 * l0 - lx - rx - uy - dy2);
+        dn++;
+      }
+    }
+    S.cache.srcDetail = dn ? detail / dn : 6;
     for (let i = 0, o = 0; i < W * H; i++, o += 4) {
       for (let c = 0; c < 3; c++) {
         const b = blur[i * 3 + c];
@@ -3635,7 +3652,8 @@ details[open]>summary::before{content:"▾"}
          eyes draw, so enamel and iris stay as glossy as they should be */
       if (st.quality > 0 && S.cache.grainFull) {
         ctx.save();
-        ctx.globalAlpha = st.quality > 1 ? 0.55 : 0.38;
+        const sd = clamp(S.cache.srcDetail || 8, 2, 26);
+        ctx.globalAlpha = clamp((st.quality > 1 ? 0.62 : 0.45) * (0.55 + sd / 26), 0.16, 0.62);
         ctx.globalCompositeOperation = 'overlay';
         try { ctx.drawImage(S.cache.grainFull, 0, 0); } catch (e) { }
         ctx.restore();

@@ -402,7 +402,7 @@ if (bendSheet) {
     const a = lap(shots[0].c, bx), b = lap(srcC, bx);
     console.log(`  ${name.padEnd(9)} rendered ${a.toFixed(0).padStart(5)}  photo ${b.toFixed(0).padStart(5)}  ${(a / b * 100).toFixed(0)}%`);
   }
-  console.log(`source photo detail: ${base.toFixed(1)}`);
+  console.log(`source photo detail: ${base.toFixed(1)} (mean |laplacian| ${(A.ses.cache.srcDetail || 0).toFixed(1)})`);
   console.log('skin detail through the bend:');
   for (const sh of shots) {
     const v = lap(sh.c, box);
