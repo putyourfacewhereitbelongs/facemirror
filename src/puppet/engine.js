@@ -152,20 +152,20 @@
       const u = clamp((p[0] - cx) / half, -1.6, 1.6);
       const v = (p[1] - cy) / m.w;
       const lip = isLip(i);
-      /* Region weight.  The lip ring moves exactly as commanded; the skin
-         around it follows a short way and then stops — the philtrum
-         especially, which in a real face does not rise with the mouth and
-         in a photograph only smears if it is moved.  `dv` is the distance
-         from the lip ring, so the falloff starts *outside* the lips.   */
+      /* Region weight.  The lip ring moves exactly as commanded.  The skin
+         around it gets a *wide, smooth* falloff — with a narrow one the
+         field has a hard edge, and a hard edge in a displacement field is
+         a crease in the surface, which is what made the jaw look torn.
+         What keeps the philtrum from smearing is not a tight kernel but a
+         small magnitude: skin moves a fraction of what the lips do, and
+         the field is smooth everywhere.                               */
       let reg = 1;
       if (!lip) {
-        const dv = Math.max(0, Math.abs(v) - 0.085);
-        const k = v < 0 ? 26 : 9;                    // the philtrum barely moves
-        reg = Math.exp(-(u * u * 0.34 + dv * dv * k));
-      } else {
-        reg = 1 - 0.25 * clamp01((Math.abs(u) - 0.86) / 0.14);   // the corners ease off
+        reg = Math.exp(-(u * u * 0.42 + v * v * 2.6));
+        if (reg < 0.02) continue;
       }
-      if (reg < 0.02) continue;
+      /* how much of the movement the surrounding skin takes part in */
+      const skinK = lip ? 1 : 0.30;
       const isUp = p[1] < cy;
       const au = Math.min(1, Math.abs(u));
       const pu = 1 - 0.30 * au * au;                   // the centre of the lip travels furthest
@@ -184,27 +184,27 @@
         const inner = LIP_SETS.upIn.indexOf(i) >= 0 || LIP_SETS.loIn.indexOf(i) >= 0;
         const roll = !lip ? 0.20 : (isUp ? (inner ? 0.34 : 0.14) : (inner ? 0.82 : 0.26));
         const part = gap + jawExtra * (isUp ? 0.18 : 0.82);
-        dy += (isUp ? -1 : 1) * part * roll * pu * reg;
+        dy += (isUp ? -1 : 1) * part * roll * pu * reg * skinK;
       } else if (open < 0) {
         /* pressing the lips together: they thin and tuck slightly */
         const press = -open;
-        dy += (isUp ? 1 : -1) * press * m.w * 0.10 * (lip ? 1 : 0.3) * pu * reg;
+        dy += (isUp ? 1 : -1) * press * m.w * 0.10 * (lip ? 1 : 0.3) * pu * reg * skinK;
       }
       /* 2. spread (spread lips / consonant stretch) and gather (pucker) */
-      dx += u * half * (wide * 0.55 * (0.45 + 0.55 * cornerP) - narrow * 0.34 * (1 - 0.4 * cornerP)) * reg;
+      dx += u * half * (wide * 0.55 * (0.45 + 0.55 * cornerP) - narrow * 0.34 * (1 - 0.4 * cornerP)) * reg * (lip ? 1 : 0.55);
       /* 3. corner lift: smile up, frown down; `asym` lets one corner lead
          (a smirk), and the lift fades toward the centre of the lip.     */
       const lead = 1 + asym * (u >= 0 ? 1 : -1) * 0.8;
-      dy -= (lift * lead) * m.w * 0.16 * (0.30 + 0.70 * cornerP) * reg;
+      dy -= (lift * lead) * m.w * 0.16 * (0.30 + 0.70 * cornerP) * reg * skinK;
       /* 4. pucker: lips push forward, thin and round outward */
-      dz += (push * 0.85 + narrow * 0.55) * m.w * 0.34 * pu * reg;
-      dy += (push * 0.10 + narrow * 0.06) * m.w * (isUp ? -1 : 1) * pu * reg;
+      dz += (push * 0.85 + narrow * 0.55) * m.w * 0.34 * pu * reg * (lip ? 1 : 0.55);
+      dy += (push * 0.10 + narrow * 0.06) * m.w * (isUp ? -1 : 1) * pu * reg * skinK;
       /* 5. lip roll: a raised upper lip shows more vermilion, a pout everts
          the lower lip.  Implemented as a normal-direction shift.        */
       const rollUp = clamp(F.rollUp || 0, -1.2, 1.2), rollLo = clamp(F.rollLo || 0, -1.2, 1.2);
       if (lip && (rollUp || rollLo)) {
         const s = isUp ? rollUp : rollLo;
-        dy += (isUp ? -1 : 1) * s * m.w * 0.06 * (1 - 0.5 * au) * reg;
+        dy += (isUp ? -1 : 1) * s * m.w * 0.06 * (1 - 0.5 * au) * reg * skinK;
       }
       const g3 = i * 3;
       d[g3] += dx; d[g3 + 1] += dy; d[g3 + 2] += dz;
@@ -608,6 +608,17 @@
       if (n > cap) { const k = cap / n; x *= k; y *= k; z *= k; }
       d[g3] = x; d[g3 + 1] = y; d[g3 + 2] = z;
     }
+    /* The residual arrives as one value per landmark, and a jaw that just
+       dropped arrives as a step.  Relaxing it over the mesh is what stops
+       the chin from creasing: the lips keep their own displacement, the
+       chin carries the rest gradually, and the photograph stretched over
+       the jaw bends the way skin does instead of tearing.            */
+    const midY = head.mouth ? head.mouth.ctr[1] : head.ctr[1];
+    const hold = new Uint8Array(478);
+    for (const set of [LIP_SETS.upOut, LIP_SETS.loOut, LIP_SETS.upIn, LIP_SETS.loIn, LIPS_O, LIPS_I]) {
+      for (const i of set) hold[i] = 1;
+    }
+    relaxDelta(head, d, { passes: 3, hold, region: (i) => head.P[i][1] > midY - head.fh * 0.02 });
     return d;
   }
   /* Anisotropy between the driver's face and the photo's.  Unit conversion
@@ -675,11 +686,116 @@
      matters — rotating the other way around this axis lifts the chin and
      pulls the lower lip up over the teeth, which is the difference between
      a mouth that opens and a mouth that only pretends to.            */
+  /* A jaw that is rigid down to the jawline and still above it tears the
+     skin: the boundary vertices move the full distance and their
+     neighbours barely move, so the surface creases and the photograph
+     stretched across that crease reads as a hard edge.  Real skin carries
+     the deformation over a much wider band.  So the weight field is
+     relaxed once per head: every vertex is averaged toward its neighbours
+     within a few millimetres of the face, with the lips and the maxilla
+     held, until the field is smooth.                                   */
+  function jawField(head) {
+    if (head._jawF) return head._jawF;
+    const n = 478;
+    const w = new Float32Array(n);
+    for (let i = 0; i < n; i++) w[i] = jawWeight(i, head);
+    const hold = new Uint8Array(n);
+    for (const set of [LIP_SETS.upOut, LIP_SETS.loOut, LIP_SETS.upIn, LIP_SETS.loIn, LIPS_O, LIPS_I]) {
+      for (const i of set) hold[i] = 1;
+    }
+    const r = Math.max(6, head.fw * 0.075);
+    const nb = neighBuckets(head, r);
+    const { buckets, GW, GH, cell, origin } = nb;
+    const out = new Float32Array(w);
+    for (let pass = 0; pass < 5; pass++) {
+      out.set(w);
+      for (let i = 0; i < n; i++) {
+        if (hold[i]) continue;
+        const p = head.P[i];
+        let sum = w[i], cnt = 1;
+        const gx = clamp(Math.floor((p[0] - origin[0]) / cell), 0, GW - 1);
+        const gy = clamp(Math.floor((p[1] - origin[1]) / cell), 0, GH - 1);
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          const bx = gx + dx, by = gy + dy;
+          if (bx < 0 || by < 0 || bx >= GW || by >= GH) continue;
+          const b = buckets[by * GW + bx];
+          if (!b) continue;
+          for (const j of b) {
+            if (j === i) continue;
+            const q = head.P[j];
+            if (Math.hypot(q[0] - p[0], q[1] - p[1]) > r) continue;
+            sum += w[j]; cnt++;
+          }
+        }
+        out[i] = sum / cnt;
+      }
+      w.set(out);
+    }
+    head._jawF = w;
+    return w;
+  }
+  /* a bucket index over the mesh, so a vertex can find its neighbours
+     without an O(n^2) sweep, cached per head                              */
+  function neighBuckets(head, r) {
+    if (head._nb && head._nb.r === r) return head._nb;
+    const cell = r, GW = Math.ceil(head.fw * 4 / cell), GH = Math.ceil(head.fh * 4 / cell);
+    const origin = [head.ctr[0] - head.fw * 2, head.ctr[1] - head.fh * 2];
+    const buckets = new Array(GW * GH);
+    for (let i = 0; i < 478; i++) {
+      const gx = clamp(Math.floor((head.P[i][0] - origin[0]) / cell), 0, GW - 1);
+      const gy = clamp(Math.floor((head.P[i][1] - origin[1]) / cell), 0, GH - 1);
+      const k = gy * GW + gx;
+      (buckets[k] || (buckets[k] = [])).push(i);
+    }
+    head._nb = { r, cell, GW, GH, origin, buckets };
+    return head._nb;
+  }
+  /* Relax a per-vertex displacement field over the mesh.  A landmark
+     cannot move on its own: skin carries the deformation to its
+     neighbours, and a field with a hard edge in it tears the surface the
+     moment the head turns.  Vertices the caller marks `hold` keep their
+     value exactly (the lips, the eyes), and `region` decides who is
+     relaxed at all.                                                   */
+  function relaxDelta(head, d, opts) {
+    const o = opts || {};
+    const r = o.r || Math.max(6, head.fw * 0.075);
+    const passes = o.passes || 3;
+    const nb = neighBuckets(head, r);
+    const { buckets, GW, GH, cell, origin } = nb;
+    const tmp = new Float32Array(478 * 3);
+    for (let p = 0; p < passes; p++) {
+      tmp.set(d);
+      for (let i = 0; i < 478; i++) {
+        if (o.hold && o.hold[i]) continue;
+        if (o.region && !o.region(i, head)) continue;
+        const q = head.P[i];
+        const gx = clamp(Math.floor((q[0] - origin[0]) / cell), 0, GW - 1);
+        const gy = clamp(Math.floor((q[1] - origin[1]) / cell), 0, GH - 1);
+        let sx = d[i * 3], sy = d[i * 3 + 1], sz = d[i * 3 + 2], cnt = 1;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          const bx = gx + dx, by = gy + dy;
+          if (bx < 0 || by < 0 || bx >= GW || by >= GH) continue;
+          const b = buckets[by * GW + bx];
+          if (!b) continue;
+          for (const j of b) {
+            if (j === i) continue;
+            const pq = head.P[j];
+            if (Math.hypot(pq[0] - q[0], pq[1] - q[1]) > r) continue;
+            sx += d[j * 3]; sy += d[j * 3 + 1]; sz += d[j * 3 + 2]; cnt++;
+          }
+        }
+        tmp[i * 3] = sx / cnt; tmp[i * 3 + 1] = sy / cnt; tmp[i * 3 + 2] = sz / cnt;
+      }
+      d.set(tmp);
+    }
+    return d;
+  }
   function applyJaw(head, pts, angle, axis) {
     if (Math.abs(angle) < 1e-4) return;
     const R = m3.fromAxisAngle(axis.dir, -angle);
+    const field = jawField(head);
     for (let i = 0; i < 478; i++) {
-      const w = jawWeight(i, head);
+      const w = field[i];
       if (w <= 0) continue;
       const rel = v3.sub(head.P[i], axis.p);
       const rot = m3.mv(R, rel);
@@ -938,7 +1054,7 @@
     LIP_SETS, MOUTH_RING, MOUTH_IDS, MOUTH_SKIN, isLip,
     mouthModel, mouthFeatures, zeroMouth, mouthDelta, jawAngleFor, JAW_MAX, mouthFrame3,
     /* geometry */
-    buildCanonical, buildMesh, faceCenterOf, localUV, tmjAxis, jawWeight, applyJaw, fitAxes,
+    buildCanonical, buildMesh, faceCenterOf, localUV, tmjAxis, jawWeight, jawField, neighBuckets, relaxDelta, applyJaw, fitAxes,
     /* expression */
     zeroActions, PRESETS, talkAt, expressionDelta, mouthState, makeTransfer, retargetResidual, residualEnergy,
     /* tracking */

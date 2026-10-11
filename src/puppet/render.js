@@ -73,21 +73,59 @@
     const out = makeCanvas(W, H);
     const g = out.getContext('2d');
     g.drawImage(S.src, 0, 0);
-    /* blur a copy, then subtract it from the original in a difference-like
-       composite and push the result through overlay */
-    const blur = makeCanvas(W, H);
-    const bg = blur.getContext('2d');
-    bg.filter = 'blur(1.6px)';
-    bg.drawImage(S.src, 0, 0);
-    bg.filter = 'none';
-    g.globalCompositeOperation = 'difference';
-    g.globalAlpha = 0.55;
-    g.drawImage(blur, 0, 0);
-    g.globalAlpha = 1;
-    g.globalCompositeOperation = 'source-over';
-    /* keep only the skin: the photo's own lips and eyes must not be
-       sharpened into hard rings */
-    S.cache.sharpen = out;
+    /* A real unsharp mask: the warp resamples the photo once per triangle
+       through two linear filters, which costs roughly a third of the fine
+       detail.  Blur a copy and add the difference back with a gain, in
+       pixel space, so the warp has detail to lose instead of inventing it.
+       (An earlier version blended the *magnitude* of the difference back
+       through `overlay`, which brightened edges rather than restoring
+       them.)                                                          */
+    let d = null;
+    try { d = g.getImageData(0, 0, W, H); } catch (e) { S.cache.warp = S.src; return; }
+    const src = d.data;
+    const amount = 0.40, radius = 1.4;
+    /* separable gaussian, three taps either side is plenty at this radius */
+    const k = [];
+    let ksum = 0;
+    for (let i = -3; i <= 3; i++) { const v = Math.exp(-(i * i) / (2 * radius * radius)); k.push(v); ksum += v; }
+    const kk = k.map(v => v / ksum);
+    const tmp = new Float32Array(W * H * 3);
+    const blur = new Float32Array(W * H * 3);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const o = (y * W + x) * 3;
+        for (let c = 0; c < 3; c++) {
+          let v = 0;
+          for (let t = -3; t <= 3; t++) {
+            const xx = clamp(x + t, 0, W - 1);
+            v += src[(y * W + xx) * 4 + c] * kk[t + 3];
+          }
+          tmp[o + c] = v;
+        }
+      }
+    }
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const o = (y * W + x) * 3;
+        for (let c = 0; c < 3; c++) {
+          let v = 0;
+          for (let t = -3; t <= 3; t++) {
+            const yy = clamp(y + t, 0, H - 1);
+            v += tmp[(yy * W + x) * 3 + c] * kk[t + 3];
+          }
+          blur[o + c] = v;
+        }
+      }
+    }
+    for (let i = 0, o = 0; i < W * H; i++, o += 4) {
+      for (let c = 0; c < 3; c++) {
+        const b = blur[i * 3 + c];
+        src[o + c] = clamp(src[o + c] + (src[o + c] - b) * amount, 0, 255);
+      }
+    }
+    g.putImageData(d, 0, 0);
+    S.cache.warp = out;
+    S.cache.sharpen = null;                      // the old overlay is retired
   }
 
   /* ---------------------------------------------------------- session */
@@ -196,6 +234,232 @@
     S.cache.blurSmall = bl;
   }
 
+  /* ------------------------------------------------------------ the skin */
+  /* A photograph can only be stretched so far before it stops looking like
+     skin.  Past about a third again its size the pixels smear, and a jaw
+     that has just dropped has stretched whole triangle fans by more than
+     that.  So the puppet also carries its own skin: the photo's own tone
+     sampled on a coarse grid, lit by the mesh's real normals and grained
+     in screen space, blended in exactly where the warp has run out of
+     resolution and blended back out where it has not.                */
+  const SKIN_LIGHT = (() => {
+    const l = [-0.34, -0.60, 0.72];
+    const m = Math.hypot(l[0], l[1], l[2]);
+    return [l[0] / m, l[1] / m, l[2] / m];
+  })();
+  /* the face outline, in the order MediaPipe's oval runs */
+  const FACE_RING = [10, 338, 297, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 152, 150,
+    136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 109, 67];
+  function buildSkin(S) {
+    const g = S.src.getContext('2d');
+    const TW = 56, TH = 42;
+    const tone = new Float32Array(TW * TH * 3);
+    let ok = true;
+    try {
+      const d = g.getImageData(0, 0, S.W, S.H).data;
+      for (let ty = 0; ty < TH; ty++) {
+        for (let tx = 0; tx < TW; tx++) {
+          const x0 = Math.floor(tx * S.W / TW), x1 = Math.max(x0 + 1, Math.floor((tx + 1) * S.W / TW));
+          const y0 = Math.floor(ty * S.H / TH), y1 = Math.max(y0 + 1, Math.floor((ty + 1) * S.H / TH));
+          let r = 0, gg = 0, b = 0, c = 0;
+          for (let y = y0; y < y1; y += 2) {
+            for (let x = x0; x < x1; x += 2) {
+              const i = (y * S.W + x) * 4;
+              r += d[i]; gg += d[i + 1]; b += d[i + 2]; c++;
+            }
+          }
+          const o = (ty * TW + tx) * 3;
+          tone[o] = c ? r / c / 255 : 0.82;
+          tone[o + 1] = c ? gg / c / 255 : 0.72;
+          tone[o + 2] = c ? b / c / 255 : 0.64;
+        }
+      }
+    } catch (e) { ok = false; tone.fill(0.8); }
+    /* Only the face.  At 56x42 the face oval is a handful of cells wide,
+       so every cell is tagged inside or outside from the mesh's own
+       outline; outside cells then take the colour of the nearest inside
+       one.  Without this the generated skin at the silhouette is the
+       colour of the background, and the jaw looks shredded.          */
+    if (ok) {
+      const inside = new Uint8Array(TW * TH);
+      const ring = FACE_RING.map(i => S.head.P[i]).filter(Boolean);
+      if (ring.length > 4) {
+        for (let ty = 0; ty < TH; ty++) {
+          for (let tx = 0; tx < TW; tx++) {
+            const x = (tx + 0.5) * S.W / TW, y = (ty + 0.5) * S.H / TH;
+            let hit = false;
+            for (let a = 0, b = ring.length - 1; a < ring.length; b = a++) {
+              const pa = ring[a], pb = ring[b];
+              if (((pa[1] > y) !== (pb[1] > y)) &&
+                  (x < (pb[0] - pa[0]) * (y - pa[1]) / ((pb[1] - pa[1]) || 1e-6) + pa[0])) hit = !hit;
+            }
+            inside[ty * TW + tx] = hit ? 1 : 0;
+          }
+        }
+      } else inside.fill(1);
+      /* one blur pass, inside only, so the tone is the colour of the
+         cheeks and not of the eye shadow it happens to sit on        */
+      const bl = new Float32Array(tone.length);
+      for (let ty = 0; ty < TH; ty++) {
+        for (let tx = 0; tx < TW; tx++) {
+          for (let c = 0; c < 3; c++) {
+            let v = 0, n = 0;
+            for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+              const x = tx + dx, y = ty + dy;
+              if (x < 0 || y < 0 || x >= TW || y >= TH || !inside[y * TW + x]) continue;
+              v += tone[(y * TW + x) * 3 + c]; n++;
+            }
+            bl[(ty * TW + tx) * 3 + c] = n ? v / n : tone[(ty * TW + tx) * 3 + c];
+          }
+        }
+      }
+      tone.set(bl);
+      /* grow the face colour outward: four sweeps of nearest-inside */
+      for (let pass = 0; pass < 4; pass++) {
+        const next = tone.slice();
+        for (let ty = 0; ty < TH; ty++) {
+          for (let tx = 0; tx < TW; tx++) {
+            if (inside[ty * TW + tx]) continue;
+            let r = 0, gg = 0, b = 0, n = 0;
+            for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+              const x = tx + dx, y = ty + dy;
+              if (x < 0 || y < 0 || x >= TW || y >= TH || !inside[y * TW + x]) continue;
+              const o = (y * TW + x) * 3;
+              r += tone[o]; gg += tone[o + 1]; b += tone[o + 2]; n++;
+            }
+            if (n) { const o = (ty * TW + tx) * 3; next[o] = r / n; next[o + 1] = gg / n; next[o + 2] = b / n; }
+          }
+        }
+        tone.set(next);
+        for (let i = 0; i < TW * TH; i++) if (!inside[i]) { /* still outside: keep what we have */ }
+        /* mark newly filled cells as inside so the colour keeps growing */
+        for (let ty = 0; ty < TH; ty++) for (let tx = 0; tx < TW; tx++) {
+          if (inside[ty * TW + tx]) continue;
+          for (let dy = -1; dy <= 1 && !inside[ty * TW + tx]; dy++) for (let dx = -1; dx <= 1; dx++) {
+            const x = tx + dx, y = ty + dy;
+            if (x < 0 || y < 0 || x >= TW || y >= TH) continue;
+            if (inside[y * TW + x]) { inside[ty * TW + tx] = 2; break; }
+          }
+        }
+        for (let i = 0; i < TW * TH; i++) if (inside[i] === 2) inside[i] = 1;
+      }
+    }
+    S.cache.skinTone = { w: TW, h: TH, v: tone };
+    /* fine grain, drawn in screen space so it never stretches with the
+       mesh: this is what keeps the generated skin from looking like paint */
+    const gs = 64, gc = makeCanvas(gs, gs), gg2 = gc.getContext('2d');
+    let seed = 12345;
+    const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    for (let i = 0; i < 900; i++) {
+      const x = rnd() * gs, y = rnd() * gs, r = 0.4 + rnd() * 1.1;
+      gg2.fillStyle = rnd() < 0.5 ? `rgba(255,246,240,${0.05 + rnd() * 0.06})` : `rgba(90,50,40,${0.04 + rnd() * 0.05})`;
+      gg2.beginPath(); gg2.arc(x, y, r, 0, 7); gg2.fill();
+    }
+    for (let i = 0; i < 130; i++) {                       // a few pores, a little larger
+      const x = rnd() * gs, y = rnd() * gs, r = 1.1 + rnd() * 1.5;
+      gg2.fillStyle = `rgba(255,250,246,${0.03 + rnd() * 0.04})`;
+      gg2.beginPath(); gg2.arc(x, y, r, 0, 7); gg2.fill();
+    }
+    S.cache.grain = gc;
+  }
+  /* the photo's tone at a source position, bilinearly */
+  function skinTone(S, x, y) {
+    const t = S.cache.skinTone;
+    if (!t) return [0.82, 0.72, 0.64];
+    const fx = clamp(x / S.W, 0, 0.999) * (t.w - 1), fy = clamp(y / S.H, 0, 0.999) * (t.h - 1);
+    const ix = Math.floor(fx), iy = Math.floor(fy), ax = fx - ix, ay = fy - iy;
+    const out = [0, 0, 0];
+    for (let c = 0; c < 3; c++) {
+      const v00 = t.v[(iy * t.w + ix) * 3 + c], v10 = t.v[(iy * t.w + ix + 1) * 3 + c];
+      const v01 = t.v[((iy + 1) * t.w + ix) * 3 + c], v11 = t.v[((iy + 1) * t.w + ix + 1) * 3 + c];
+      out[c] = (v00 + (v10 - v00) * ax) + ((v01 + (v11 - v01) * ax) - (v00 + (v10 - v00) * ax)) * ay;
+    }
+    return out;
+  }
+  /* The silhouette.  When the jaw drops or the cheeks lift, the edge of
+     the mesh travels further than the triangles there can cover, and what
+     shows through is background: the ragged edge a stretched photograph
+     gets.  This pass fills that gap with generated skin — one band per
+     boundary edge, exactly as wide as that edge moved — shaded by the
+     boundary vertices' own normals and coloured from the face just inside
+     them.  Where the mesh did not move the band is invisible.         */
+  /* The fold: a triangle that has turned away from the camera has no
+     photograph to show — sampling the picture there reads whatever is at
+     the edge of the face (hair, background, a shadow) and paints it into
+     the jaw as a dark spike.  So it is painted as skin instead: the tone
+     of the face it belongs to, lit by its own normals, so the fold
+     darkens smoothly as the jaw drops and the surface turns under.  */
+  function paintFold(S, ctx, V, lums, sx, sy, alpha) {
+    let iMax = 0, iMin = 0;
+    for (let i = 1; i < 3; i++) { if (lums[i] > lums[iMax]) iMax = i; if (lums[i] < lums[iMin]) iMin = i; }
+    if (iMax === iMin) iMin = (iMax + 1) % 3;
+    const iMid = 3 - iMax - iMin;
+    const pMax = V[iMax], pMin = V[iMin], pMid = V[iMid];
+    const dx = pMin[0] - pMax[0], dy = pMin[1] - pMax[1], len2 = dx * dx + dy * dy || 1;
+    const tMid = clamp(((pMid[0] - pMax[0]) * dx + (pMid[1] - pMax[1]) * dy) / len2, 0.08, 0.92);
+    const tone = skinTone(S, sx, sy);
+    const col = l => `rgb(${clamp(tone[0] * 255 * l, 0, 255) | 0},${clamp(tone[1] * 255 * l, 0, 255) | 0},${clamp(tone[2] * 255 * l, 0, 255) | 0})`;
+    const g = ctx.createLinearGradient(pMax[0], pMax[1], pMin[0], pMin[1]);
+    g.addColorStop(0, col(lums[iMax]));
+    g.addColorStop(tMid, col(lums[iMid]));
+    g.addColorStop(1, col(lums[iMin]));
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(V[0][0], V[0][1]);
+    ctx.lineTo(V[1][0], V[1][1]);
+    ctx.lineTo(V[2][0], V[2][1]);
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  function drawSkinRim(S, ctx, R) {
+    const cen = S.head.ctr;
+    /* The rim is for exposed skin.  Above the cheekbones the silhouette
+       is hair, and a band of skin there reads as a halo, so only the
+       jaw line and below is filled — which is also the only part of the
+       face that moves far enough to need it.                         */
+    const top = S.head.ctr[1] - S.head.fh * 0.06;
+    const vn = S.vnormA, A = S.DST, B = S.S2;
+    const maxL = S.head.fw * 0.11;
+    for (let k = 0; k < FACE_RING.length; k++) {
+      const i0 = FACE_RING[k], i1 = FACE_RING[(k + 1) % FACE_RING.length];
+      const x0 = A[i0 * 2], y0 = A[i0 * 2 + 1], x1 = A[i1 * 2], y1 = A[i1 * 2 + 1];
+      if (y0 < top && y1 < top) continue;
+      const n0 = unitXY(x0 - cen[0], y0 - cen[1]), n1 = unitXY(x1 - cen[0], y1 - cen[1]);
+      /* only the part of the movement that pushes the silhouette OUTWARD
+         needs skin behind it.  A head turning pulls its far cheek in, and
+         filling that would paint a skin halo over the hair.           */
+      const out0 = (x0 - B[i0 * 2]) * n0[0] + (y0 - B[i0 * 2 + 1]) * n0[1];
+      const out1 = (x1 - B[i1 * 2]) * n1[0] + (y1 - B[i1 * 2 + 1]) * n1[1];
+      const L0 = clamp(out0 * 1.25, 0, maxL), L1 = clamp(out1 * 1.25, 0, maxL);
+      if (L0 < 0.6 && L1 < 0.6) continue;
+      const lam = i => {
+        const v = i * 3;
+        const nx = R[0] * vn[v] + R[1] * vn[v + 1] + R[2] * vn[v + 2];
+        const ny = R[3] * vn[v] + R[4] * vn[v + 1] + R[5] * vn[v + 2];
+        const nz = R[6] * vn[v] + R[7] * vn[v + 1] + R[8] * vn[v + 2];
+        return 0.62 + 0.58 * Math.max(0.05, nx * SKIN_LIGHT[0] + ny * SKIN_LIGHT[1] + nz * SKIN_LIGHT[2]);
+      };
+      const c0 = skinTone(S, B[i0 * 2], B[i0 * 2 + 1]), c1 = skinTone(S, B[i1 * 2], B[i1 * 2 + 1]);
+      const l0 = lam(i0), l1 = lam(i1);
+      const col = (c, l) => `rgb(${clamp(c[0] * 255 * l, 0, 255) | 0},${clamp(c[1] * 255 * l, 0, 255) | 0},${clamp(c[2] * 255 * l, 0, 255) | 0})`;
+      const g = ctx.createLinearGradient(x0, y0, x1, y1);
+      g.addColorStop(0, col(c0, l0));
+      g.addColorStop(1, col(c1, l1));
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.lineTo(x1 + n1[0] * L1, y1 + n1[1] * L1);
+      ctx.lineTo(x0 + n0[0] * L0, y0 + n0[1] * L0);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+  const unitXY = (x, y) => { const l = Math.hypot(x, y) || 1; return [x / l, y / l]; };
+
   /* ------------------------------------------------------ sessionInit */
   function sessionInit(S, spec) {
     S.src = spec.source;
@@ -232,22 +496,44 @@
     };
     S.normals = mkNormals(spec.mesh.base);
     S.normalsFace = mkNormals(spec.mesh.face);
+    /* Smooth per-vertex normals: the flat ones above cull correctly but
+       cannot shade a curved cheek, and the generated skin is shaded from
+       them.  Area-weighted accumulation, then normalised.             */
+    const mkVNormals = (list) => {
+      const out = new Float32Array(n * 3);
+      for (let t = 0; t < list.length; t += 3) {
+        const a = list[t], b = list[t + 1], c = list[t + 2];
+        const pa = spec.mesh.P[a], pb = spec.mesh.P[b], pc = spec.mesh.P[c];
+        let nr = v3.cross(v3.sub(pb, pa), v3.sub(pc, pa));
+        const area2 = (pb[0] - pa[0]) * (pc[1] - pa[1]) - (pb[1] - pa[1]) * (pc[0] - pa[0]);
+        if (area2 < 0) nr = [-nr[0], -nr[1], -nr[2]];
+        for (const v of [a, b, c]) { out[v * 3] += nr[0]; out[v * 3 + 1] += nr[1]; out[v * 3 + 2] += nr[2]; }
+      }
+      for (let i = 0; i < n; i++) {
+        const l = Math.hypot(out[i * 3], out[i * 3 + 1], out[i * 3 + 2]) || 1;
+        out[i * 3] /= l; out[i * 3 + 1] /= l; out[i * 3 + 2] /= l;
+      }
+      return out;
+    };
+    S.vnormA = mkVNormals(spec.mesh.base);
+    S.vnormB = mkVNormals(spec.mesh.face);
     const mkPass = (list, normals, o) => ({
       list, normals, n: list.length / 3,
       order: new Int32Array(list.length / 3),
       dkey: new Float32Array(list.length / 3),
       tmp: new Int32Array(list.length / 3),
       mergeFallbacks: 0, initialized: false,
-      pad: o.pad, cull: o.cull, mirror: o.mirror !== false
+      pad: o.pad, cull: o.cull, mirror: o.mirror !== false, vnorm: o.vnorm
     });
-    S.triA = mkPass(spec.mesh.base, S.normals, { pad: 0.9, cull: -0.02, mirror: true });
-    S.triB = mkPass(spec.mesh.face, S.normalsFace, { pad: 0.95, cull: -0.05, mirror: true });
+    S.triA = mkPass(spec.mesh.base, S.normals, { pad: 0.9, cull: -0.02, mirror: true, vnorm: S.vnormA });
+    S.triB = mkPass(spec.mesh.face, S.normalsFace, { pad: 0.95, cull: -0.05, mirror: true, vnorm: S.vnormB });
     S.mid = spec.head.mid.slice();
     S.axis = E.tmjAxis(spec.head);
     S.arches = buildArches();
     buildSharpen(S);
     prepIris(S);
     buildPlate(S);
+    buildSkin(S);
     buildDental(S);
     S.ready = true;
     return S;
@@ -488,16 +774,48 @@
       let s0x = S2[a * 2], s0y = S2[a * 2 + 1];
       let s1x = S2[b * 2], s1y = S2[b * 2 + 1];
       let s2x = S2[c * 2], s2y = S2[c * 2 + 1];
-      if (behind && pass.mirror) {
-        /* Mirrored source approximation; swap the sample winding so the
-           affine remains non-degenerate. This is not learned inpainting. */
+      if (behind) {
+        /* This triangle has turned away from the camera: it is the fold
+           under the jaw, or the side of the neck.  Whatever is *there*
+           now is the inside of the surface, so the warp has nothing to
+           show and used to fall back to the background plate — which is
+           what put dark spikes along the jaw every time it dropped.  The
+           right thing to show is skin, so the fold is filled from where
+           that piece of skin sits in the photograph at rest, pulled a
+           little way in from the silhouette so it is face and not edge.
+           Degenerate windings still fall back to the mirrored sample. */
+        s0x = S.BASE[a * 3]; s0y = S.BASE[a * 3 + 1];
+        s1x = S.BASE[b * 3]; s1y = S.BASE[b * 3 + 1];
+        s2x = S.BASE[c * 3]; s2y = S.BASE[c * 3 + 1];
+        const cx = S.head.ctr[0], cy = S.head.ctr[1], pull = 0.10;
+        s0x += (cx - s0x) * pull; s0y += (cy - s0y) * pull;
+        s1x += (cx - s1x) * pull; s1y += (cy - s1y) * pull;
+        s2x += (cx - s2x) * pull; s2y += (cy - s2y) * pull;
+      }
+      let det = (s1x - s0x) * (s2y - s0y) - (s1y - s0y) * (s2x - s0x);
+      if (behind && pass.mirror && (!isFinite(det) || Math.abs(det) < 1e-6)) {
         s0x = 2 * midX - s0x;
         const tmpX = 2 * midX - s1x, tmpY = s1y;
         s1x = 2 * midX - s2x; s1y = s2y;
         s2x = tmpX; s2y = tmpY;
+        det = (s1x - s0x) * (s2y - s0y) - (s1y - s0y) * (s2x - s0x);
       }
-      const det = (s1x - s0x) * (s2y - s0y) - (s1y - s0y) * (s2x - s0x);
-      if (!isFinite(det) || Math.abs(det) < 1e-6) continue;
+      if (!isFinite(det) || Math.abs(det) < 1e-8) {
+        /* A degenerate source triangle has nothing to resample, and
+           skipping it would leave a hole for the blurred backdrop to show
+           through — which at the jaw showed as dark spikes.  Fall back to
+           the photograph *unmoved*: the same pixels this triangle covers
+           at rest, translated to where it is now.  Shape is right, and it
+           is skin rather than backdrop.                              */
+        const bcx = (S.BASE[a * 3] + S.BASE[b * 3] + S.BASE[c * 3]) / 3;
+        const bcy = (S.BASE[a * 3 + 1] + S.BASE[b * 3 + 1] + S.BASE[c * 3 + 1]) / 3;
+        const dcx = (ax + bx + cx) / 3, dcy = (ay + by + cy) / 3;
+        s0x = bcx + (ax - dcx); s0y = bcy + (ay - dcy);
+        s1x = bcx + (bx - dcx); s1y = bcy + (by - dcy);
+        s2x = bcx + (cx - dcx); s2y = bcy + (cy - dcy);
+        det = (s1x - s0x) * (s2y - s0y) - (s1y - s0y) * (s2x - s0x);
+      }
+      if (!isFinite(det) || Math.abs(det) < 1e-8) continue;
       const k = 1 / det;
       const ma = ((bx - ax) * (s2y - s0y) - (by - ay) * (s2x - s0x)) * k;
       const mb = ((by - ay) * (s1x - s0x) - (bx - ax) * (s1y - s0y)) * k;
@@ -523,7 +841,7 @@
       const y1 = clamp(Math.ceil(Math.max(s0y, s1y, s2y)) + 1, 0, H);
       const sw = x1 - x0, sh = y1 - y0;
       if (sw > 0 && sh > 0) {
-        try { ctx.drawImage(behind ? S.cache.plate : S.src, x0, y0, sw, sh, x0, y0, sw, sh); } catch (e) {}
+        try { ctx.drawImage(S.cache.warp || S.src, x0, y0, sw, sh, x0, y0, sw, sh); } catch (e) {}
       }
       ctx.restore();
       ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1409,6 +1727,10 @@
     lc.setTransform(1, 0, 0, 1, 0, 0);
     lc.clearRect(0, 0, S.W, S.H);
     lc.drawImage(S.cache.plate || S.src, 0, 0);
+    /* generated skin first — under the whole face and out past its
+       silhouette — so the shell paints over it wherever the mesh still
+       has a photograph to show, and the fold where it does not is skin */
+    drawSkinRim(S, lc, matFromQuat(st.q));
     lc.imageSmoothingQuality = st.quality > 0 ? 'high' : 'low';
     drawShell(S, lc, st, S.triA, { resetOrder: S.frames < 3, padScale: st.quality > 1 ? 1.4 : 1 });
     if (st.quality > 0) drawShell(S, lc, st, S.triB, { resetOrder: S.frames < 3, padScale: st.quality > 1 ? 1.4 : 1 });
@@ -1420,17 +1742,8 @@
       ctx.drawImage(S.src, 0, 0);
     } else {
       ctx.drawImage(S.layer, 0, 0);
-      /* ---- face detail: the triangle shell resamples the photo, which
-             softens skin and smears the fine detail around the eyes and
-             mouth; a light unsharp mask of the same source puts it back so
-             the render still looks like a photograph and not a painting */
-      if (st.quality > 0 && S.cache.sharpen) {
-        ctx.save();
-        ctx.globalAlpha = st.quality > 1 ? 0.42 : 0.30;
-        ctx.globalCompositeOperation = 'overlay';
-        try { ctx.drawImage(S.cache.sharpen, 0, 0); } catch (e) {}
-        ctx.restore();
-      }
+      /* (the warp source is pre-sharpened once in buildSharpen, so there
+         is no per-frame unsharp overlay to pay for any more)          */
       /* ---- the mouth ------------------------------------------------
              One pass owns the whole mouth: cavity, tongue, both arches and
              the inner lips are ordered and lit from the same frame, so the

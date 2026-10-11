@@ -266,7 +266,9 @@ const flags = [
   ['LIP_OFF', 'drawLipShell(S, ctx, C, D, runs, h, mouthM);', "__off('LIP_OFF', drawLipShell, 0)(S, ctx, C, D, runs, h, mouthM);"],
   ['MOUTH_OFF', 'const mm = drawMouth(S, ctx, st, C, D, mouthM);',
     "const mm = __off('MOUTH_OFF', drawMouth, { h: 0, drawn: 0, upper: 0, lower: 0, seen: 0, tongueOut: 0 })(S, ctx, st, C, D, mouthM);"],
-  ['SHADE_OFF', 'lipShading(S, ctx, C, D, runs, h, mouthM);', "__off('SHADE_OFF', lipShading, 0)(S, ctx, C, D, runs, h, mouthM);"]
+  ['SHADE_OFF', 'lipShading(S, ctx, C, D, runs, h, mouthM);', "__off('SHADE_OFF', lipShading, 0)(S, ctx, C, D, runs, h, mouthM);"],
+  ['PLATE_OFF', 'lc.drawImage(S.cache.plate || S.src, 0, 0);',
+    "lc.drawImage(process.env.PLATE_OFF ? S.src : (S.cache.plate || S.src), 0, 0);"]
 ];
 for (const rel of ['src/math.js', 'src/puppet/engine.js', 'src/puppet/render.js', 'src/puppet/ui.js']) {
   let code = await readFile(join(rootDir, rel), 'utf8');
@@ -307,7 +309,9 @@ const scenarios = {
   zoom: [['closed', {}], ['open 0.35', { open: 0.35, jaw: 0.35 }], ['open 0.7', { open: 0.7, jaw: 0.7 }],
     ['open 1.0', { open: 1, jaw: 1 }], ['grin', { smile: 1, open: 0.5, jaw: 0.5, tv: 1 }]],
   closeup: [['open 0.7', { open: 0.7, jaw: 0.7 }], ['open 1.0', { open: 1, jaw: 1 }],
-    ['grin', { smile: 0.8, open: 0.6, jaw: 0.6, tv: 1 }]]
+    ['grin', { smile: 0.8, open: 0.6, jaw: 0.6, tv: 1 }]],
+  bend: [['neutral', {}], ['jaw 1.0', { open: 1, jaw: 1 }], ['smile 1.0', { smile: 1, jaw: 0.2 }],
+    ['jaw + yaw', { open: 1, jaw: 1, yaw: 0.5 }]]
 };
 const shots = [];
 for (const [label, o] of scenarios[scenario] || scenarios.mouth) {
@@ -320,7 +324,34 @@ for (const [label, o] of scenarios[scenario] || scenarios.mouth) {
   shots.push({ label, c });
 }
 
-const zoomSheet = scenario === 'zoom', closeup = scenario === 'closeup';
+const zoomSheet = scenario === 'zoom', closeup = scenario === 'closeup', bendSheet = scenario === 'bend';
+if (bendSheet) {
+  /* How much photo detail survives the warp?  Laplacian energy over a
+     cheek patch, against the source photo the puppet was built from:
+     anything well under 100% is the warp paying for it, not the picture. */
+  const box = [240, 300, 420, 430];
+  const lap = (c, bx) => {
+    const d = c.getContext('2d').getImageData(bx[0], bx[1], bx[2] - bx[0], bx[3] - bx[1]).data;
+    const w = bx[2] - bx[0], h = bx[3] - bx[1];
+    let sum = 0, n = 0;
+    const lum = i => 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+      const i = (y * w + x) * 4;
+      const v = 4 * lum(i) - lum(i - 4) - lum(i + 4) - lum(i - w * 4) - lum(i + w * 4);
+      sum += v * v; n++;
+    }
+    return sum / n;
+  };
+  const srcC = createCanvas(W, H);
+  srcC.getContext('2d').drawImage(photo, 0, 0);
+  const base = lap(srcC, box);
+  console.log(`source photo detail: ${base.toFixed(1)}`);
+  console.log('skin detail through the bend:');
+  for (const sh of shots) {
+    const v = lap(sh.c, box);
+    console.log(`  ${sh.label.padEnd(11)} ${v.toFixed(1).padStart(7)}   ${(v / base * 100).toFixed(1)}% of the photo`);
+  }
+}
 const cols = zoomSheet ? 5 : (closeup ? 3 : 4), pad = 6, rows = Math.ceil(shots.length / cols);
 const sheet = createCanvas(cols * (W + pad) + pad, rows * (H + pad + 18) + pad);
 const sg = sheet.getContext('2d');
@@ -330,8 +361,9 @@ shots.forEach((s, i) => {
   sg.drawImage(s.c, x, y);
   sg.fillStyle = '#5eead4'; sg.font = '14px sans-serif';
   sg.fillText(s.label, x + 4, y + H + 14);
-  if (zoomSheet || closeup) {                                   // one big crop per frame
-    const box = closeup ? [278, 286, 362, 370] : [252, 232, 400, 380], zn = closeup ? 7 : 4;
+  if (zoomSheet || closeup || bendSheet) {                      // one big crop per frame
+    const box = closeup ? [278, 286, 362, 370] : bendSheet ? [230, 200, 450, 470] : [252, 232, 400, 380];
+    const zn = closeup ? 5.9 : (bendSheet ? 2.5 : 4);
     sg.imageSmoothingEnabled = true;
     sg.drawImage(s.c, box[0], box[1], box[2] - box[0], box[3] - box[1],
                  x, y, (box[2] - box[0]) * zn, (box[3] - box[1]) * zn);
