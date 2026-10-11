@@ -143,6 +143,52 @@
     g.putImageData(d, 0, 0);
     S.cache.warp = out;
     S.cache.sharpen = null;                      // the old overlay is retired
+    /* A four-level pyramid, chosen per triangle from how much that triangle
+       is being blown up or shrunk.  Magnification is where a warped
+       photograph goes soft, and the answer to magnification blur is detail
+       that was never in the picture — added, at the level of the blur, and
+       only where it is needed.  Minification gets the opposite: a blurred
+       level, so a turning face stops shimmering.  This is a mip pyramid
+       driven by the mesh's own deformation, and it costs nothing per
+       frame beyond the choice itself.                               */
+    S.cache.tex = [makeLevel(S, -1), S.cache.warp, makeLevel(S, 0.9), makeLevel(S, 1.9)];
+  }
+  /* one pyramid level: `amount` < 0 blurs (for minification), > 0 sharpens */
+  function makeLevel(S, amount) {
+    const { W, H } = S;
+    const c = makeCanvas(W, H), g = c.getContext('2d');
+    if (amount < 0) {
+      g.filter = 'blur(1.1px)';
+      g.drawImage(S.cache.warp || S.src, 0, 0);
+      g.filter = 'none';
+      return c;
+    }
+    let d = null;
+    try { d = g.getImageData(0, 0, W, H); } catch (e) { g.drawImage(S.cache.warp || S.src, 0, 0); return c; }
+    const px = d.data;
+    const k = [1, 4, 6, 4, 1], ks = 16;
+    const tmp = new Float32Array(W * H * 3), bl = new Float32Array(W * H * 3);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const o = (y * W + x) * 3;
+      for (let cc = 0; cc < 3; cc++) {
+        let v = 0;
+        for (let t = -2; t <= 2; t++) v += px[(y * W + clamp(x + t, 0, W - 1)) * 4 + cc] * k[t + 2];
+        tmp[o + cc] = v / ks;
+      }
+    }
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const o = (y * W + x) * 3;
+      for (let cc = 0; cc < 3; cc++) {
+        let v = 0;
+        for (let t = -2; t <= 2; t++) v += tmp[(clamp(y + t, 0, H - 1) * W + x) * 3 + cc] * k[t + 2];
+        bl[o + cc] = v / ks;
+      }
+    }
+    for (let i = 0, o = 0; i < W * H; i++, o += 4) {
+      for (let cc = 0; cc < 3; cc++) px[o + cc] = clamp(px[o + cc] + (px[o + cc] - bl[i * 3 + cc]) * amount, 0, 255);
+    }
+    g.putImageData(d, 0, 0);
+    return c;
   }
 
   /* ---------------------------------------------------------- session */
@@ -264,6 +310,27 @@
     const m = Math.hypot(l[0], l[1], l[2]);
     return [l[0] / m, l[1] / m, l[2] / m];
   })();
+  /* Pull a source point into the face's own oval.  Triangles that have
+     turned away from the camera have to be filled from somewhere, and
+     sampling wherever they happen to land reads hair, shoulder or
+     backdrop; clamping to the oval keeps every such sample on skin.
+     The oval is the face ring's own extents, so it fits any photo.    */
+  function clampToFace(S, x, y) {
+    const h = S.head;
+    if (!h || !h.P[10]) return [x, y];
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const i of FACE_RING) {
+      const p = h.P[i];
+      x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]);
+      y0 = Math.min(y0, p[1]); y1 = Math.max(y1, p[1]);
+    }
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    const rx = Math.max(4, (x1 - x0) / 2 * 0.94), ry = Math.max(4, (y1 - y0) / 2 * 0.94);
+    const nx = (x - cx) / rx, ny = (y - cy) / ry;
+    const r = Math.hypot(nx, ny);
+    if (r <= 1) return [x, y];
+    return [cx + nx / r * rx, cy + ny / r * ry];
+  }
   /* the face outline, in the order MediaPipe's oval runs */
   const FACE_RING = [10, 338, 297, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 152, 150,
     136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 109, 67];
@@ -589,6 +656,15 @@
     S.triA = mkPass(spec.mesh.base, S.normals, { pad: 0.9, cull: -0.02, mirror: true, vnorm: S.vnormA });
     S.triB = mkPass(spec.mesh.face, S.normalsFace, { pad: 0.95, cull: -0.05, mirror: true, vnorm: S.vnormB });
     S.mid = spec.head.mid.slice();
+    {
+      let x0 = Infinity, x1 = -Infinity;
+      for (const i of FACE_RING) {
+        const p = spec.head.P[i];
+        if (!p) continue;
+        x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]);
+      }
+      S.faceMid = [isFinite(x0) ? (x0 + x1) / 2 : S.mid[0], (x0 + x1) / 2];
+    }
     S.axis = E.tmjAxis(spec.head);
     S.arches = buildArches();
     buildSharpen(S);
@@ -836,22 +912,20 @@
       let s1x = S2[b * 2], s1y = S2[b * 2 + 1];
       let s2x = S2[c * 2], s2y = S2[c * 2 + 1];
       if (behind) {
-        /* This triangle has turned away from the camera: it is the fold
-           under the jaw, or the side of the neck.  Whatever is *there*
-           now is the inside of the surface, so the warp has nothing to
-           show and used to fall back to the background plate — which is
-           what put dark spikes along the jaw every time it dropped.  The
-           right thing to show is skin, so the fold is filled from where
-           that piece of skin sits in the photograph at rest, pulled a
-           little way in from the silhouette so it is face and not edge.
-           Degenerate windings still fall back to the mirrored sample. */
-        s0x = S.BASE[a * 3]; s0y = S.BASE[a * 3 + 1];
-        s1x = S.BASE[b * 3]; s1y = S.BASE[b * 3 + 1];
-        s2x = S.BASE[c * 3]; s2y = S.BASE[c * 3 + 1];
-        const cx = S.head.ctr[0], cy = S.head.ctr[1], pull = 0.10;
-        s0x += (cx - s0x) * pull; s0y += (cy - s0y) * pull;
-        s1x += (cx - s1x) * pull; s1y += (cy - s1y) * pull;
-        s2x += (cx - s2x) * pull; s2y += (cy - s2y) * pull;
+        /* This triangle has turned away from the camera: the far cheek of
+           a turning head, or the fold under a dropped jaw.  There is no
+           photograph of the far side, so it is filled from the *near* side
+           mirrored across the face's midline — sharp, continuous at the
+           midline, and symmetric, which a face nearly is — and every
+           sample is pulled back inside the face oval so a mirrored corner
+           can never land on hair or backdrop.  (Sampling each vertex's own
+           rest position instead, as this did, puts a stale copy of the
+           face on the far side and reads as a smear the moment the head
+           moves.)                                                      */
+        const mm = clampToFace(S, 2 * S.faceMid[0] - S.BASE[a * 3], S.BASE[a * 3 + 1]);
+        const m1 = clampToFace(S, 2 * S.faceMid[0] - S.BASE[b * 3], S.BASE[b * 3 + 1]);
+        const m2 = clampToFace(S, 2 * S.faceMid[0] - S.BASE[c * 3], S.BASE[c * 3 + 1]);
+        s0x = mm[0]; s0y = mm[1]; s1x = m1[0]; s1y = m1[1]; s2x = m2[0]; s2y = m2[1];
       }
       let det = (s1x - s0x) * (s2y - s0y) - (s1y - s0y) * (s2x - s0x);
       if (behind && pass.mirror && (!isFinite(det) || Math.abs(det) < 1e-6)) {
@@ -878,6 +952,17 @@
       }
       if (!isFinite(det) || Math.abs(det) < 1e-8) continue;
       const k = 1 / det;
+      /* how much this triangle is magnified: > 1 means the photograph is
+         being blown up here and has no detail left to give, < 1 means it
+         is being shrunk and will shimmer without help */
+      const stretch = Math.sqrt(Math.abs(area / det));
+      const tex = S.cache.tex;
+      /* Any magnification at all softens the result, so anything over
+         1.02 gets a sharpened level, not just the extremes: a jaw that
+         has dropped stretches the chin by a third, and without this the
+         chin was carrying 65% of the detail it has at rest.        */
+      const srcTex = tex ? (stretch < 0.68 ? tex[0] : stretch < 1.02 ? tex[1]
+                          : stretch < 1.22 ? tex[2] : tex[3]) : (S.cache.warp || S.src);
       const ma = ((bx - ax) * (s2y - s0y) - (by - ay) * (s2x - s0x)) * k;
       const mb = ((by - ay) * (s1x - s0x) - (bx - ax) * (s1y - s0y)) * k;
       const mc = ((cx - ax) * (s2y - s0y) - (cy - ay) * (s2x - s0x)) * k;
@@ -902,7 +987,7 @@
       const y1 = clamp(Math.ceil(Math.max(s0y, s1y, s2y)) + 1, 0, H);
       const sw = x1 - x0, sh = y1 - y0;
       if (sw > 0 && sh > 0) {
-        try { ctx.drawImage(S.cache.warp || S.src, x0, y0, sw, sh, x0, y0, sw, sh); } catch (e) {}
+        try { ctx.drawImage(srcTex, x0, y0, sw, sh, x0, y0, sw, sh); } catch (e) {}
       }
       ctx.restore();
       ctx.setTransform(1, 0, 0, 1, 0, 0);

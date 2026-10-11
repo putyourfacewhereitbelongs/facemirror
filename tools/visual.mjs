@@ -396,6 +396,20 @@ if (bendSheet) {
   srcC.getContext('2d').drawImage(photo, 0, 0);
   if (process.env.SAVE_PHOTO) await writeFile(process.env.SAVE_PHOTO, srcC.toBuffer('image/png'));
   const base = lap(srcC, box);
+  /* motion check: does a *moving* frame lose detail against a still one?
+     That is the honest test of "blurring when it moves".               */
+  {
+    const regions = [['brow', [250, 150, 400, 210]], ['eye', [250, 195, 400, 245]],
+                     ['cheek', [220, 290, 330, 380]], ['jaw', [250, 380, 400, 440]],
+                     ['mouth', [280, 300, 370, 350]]];
+    const rows = [];
+    for (const [n, bx] of regions) {
+      const still = lap(shots[0].c, bx), jaw = lap(shots[1].c, bx), yaw = lap(shots[3].c, bx);
+      rows.push(`  ${n.padEnd(6)} still ${still.toFixed(0).padStart(5)}   jaw ${jaw.toFixed(0).padStart(5)} (${(jaw / still * 100).toFixed(0)}%)   yaw ${yaw.toFixed(0).padStart(5)} (${(yaw / still * 100).toFixed(0)}%)`);
+    }
+    console.log('detail when moving, against still:');
+    for (const r of rows) console.log(r);
+  }
   console.log('per-region detail, rendered vs photo:');
   for (const [name, bx] of [['forehead', [250, 150, 400, 220]], ['cheek', [220, 300, 330, 390]],
                             ['eye', [250, 200, 400, 260]], ['chin', [290, 400, 360, 440]]]) {
