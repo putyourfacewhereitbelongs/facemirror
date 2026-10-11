@@ -31,7 +31,7 @@ export function syntheticFace({ W = 720, H = 900, cx = 360, cy = 400, fh = 470, 
 
   // eyes
   const ew = fw * 0.30, eh = ew * 0.30;
-  [[0, -1], [1, 1]].forEach(([n, side]) => {
+  [[0, 1], [1, -1]].forEach(([n, side]) => {
     const ex = cx + side * fw * 0.215;
     EYE[n].forEach((idx, k) => {
       const a = (k * TAU) / EYE[n].length + Math.PI * 0.1;

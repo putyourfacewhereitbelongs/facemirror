@@ -200,6 +200,7 @@ export function drawSeam(ctx, plate, silhouette, o = {}) {
  */
 export function enhanceROIs(ctx, rois, amount) {
   if (amount <= 0.01) return;
+  const strength = clamp(amount, 0, 1) * 0.18;
   const x = ctx;
   for (const r of rois) {
     const w = Math.max(4, Math.round(r.w)), h = Math.max(4, Math.round(r.h));
@@ -208,14 +209,14 @@ export function enhanceROIs(ctx, rois, amount) {
     o.setTransform(1, 0, 0, 1, 0, 0);
     o.clearRect(0, 0, w, h);
     o.drawImage(ctx.canvas, r.x, r.y, w, h, 0, 0, w, h);
-    o.filter = `blur(${r.radius || 2}px)`;
+    o.filter = `blur(${Math.max(1.2, (r.radius || 2) * 1.2)}px)`;
     o.globalCompositeOperation = 'difference';
-    o.drawImage(r.off, 0, 0);   // |A - blur(A)|: the high-pass residual
+    o.drawImage(r.off, 0, 0);
     o.filter = 'none';
     o.globalCompositeOperation = 'source-over';
     x.save();
-    x.globalCompositeOperation = 'overlay';
-    x.globalAlpha = clamp(amount, 0, 1);
+    x.globalCompositeOperation = 'soft-light';
+    x.globalAlpha = strength;
     x.drawImage(r.off, 0, 0, w, h, r.x, r.y, w, h);
     x.restore();
   }

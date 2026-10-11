@@ -805,10 +805,10 @@ function render(dt) {
       tongueAmt: SM.tongue.value, tipUp: SM.tTip.value, backUp: SM.tBack.value,
       wide: SM.tWide.value, protrude: SM.tOut.value,
       toothAmt: num('tv', 0.4), toothScale: num('toothScale', 1), gumVis: num('gumV', 0.6),
-      archTau: num('archTau', 0.55), bright: num('tb', 1.15), warm: num('tw', 0),
+      archTau: num('archTau', 0.55), bright: num('tb', 0.82), warm: num('tw', 0.18),
     },
     archPrev: archCache, iris: irisSprites, tex: textures, lum: LUM,
-    blend: num('blend', 0.55), seamAO: num('seamAO', 0.5), shade: num('shade', 0.75), enhance: num('enh', 0.35),
+    blend: num('blend', 0.55), seamAO: num('seamAO', 0.5), shade: num('shade', 0.75), enhance: num('enh', 0.12),
     flags: {
       showOrig: chk('showOrig', false), cull: chk('cull', false), plateOn: chk('plate', true),
       seam: chk('seam', true), showPts: chk('showPts', true), ibug: chk('ibug', false), quality: num('quality', 1),
@@ -827,20 +827,20 @@ function buildTextures() {
   const en = mkOff(); en.width = 128; en.height = 160;
   const c = en.getContext('2d');
   const g = c.createLinearGradient(0, 0, 0, 160);
-  [[0, '#d6c7a4'], [0.22, '#ece3cc'], [0.6, '#f6f0e2'], [0.88, '#efefe9'], [1, '#d5dcdf']].forEach(q => g.addColorStop(q[0], q[1]));
+  [[0, '#d7c3a1'], [0.18, '#e9d9be'], [0.52, '#f3ebde'], [0.8, '#e8e0d2'], [1, '#d6cbc2']].forEach(q => g.addColorStop(q[0], q[1]));
   c.fillStyle = g; c.fillRect(0, 0, 128, 160);
   const R = (() => { let z = 7; return () => (z = (z * 16807) % 2147483647) / 2147483647; })();
-  for (let i = 0; i < 46; i++) {                      // mottled enamel: warm and cool blotches
-    const x = R() * 128, y = R() * 160, r = 18 + R() * 34;
-    const rg = c.createRadialGradient(x, y, 0, x, y, r), warm = R() < 0.5;
-    rg.addColorStop(0, warm ? 'rgba(255,252,240,.18)' : 'rgba(190,160,100,.14)');
+  for (let i = 0; i < 52; i++) {                      // natural warm/cool ivory mottling, not a flat, plastic white
+    const x = R() * 128, y = R() * 160, r = 12 + R() * 28;
+    const rg = c.createRadialGradient(x, y, 0, x, y, r), warm = R() < 0.55;
+    rg.addColorStop(0, warm ? 'rgba(255,248,236,.14)' : 'rgba(150,125,96,.09)');
     rg.addColorStop(1, 'rgba(255,255,255,0)');
     c.fillStyle = rg; c.fillRect(0, 0, 128, 160);
   }
-  for (let i = 0; i < 90; i++) {                      // perikymata: faint vertical growth lines
+  for (let i = 0; i < 80; i++) {                      // delicate perikymata with a softer, slightly off-white tint
     const x = R() * 128;
-    c.fillStyle = R() < 0.5 ? 'rgba(255,255,255,.07)' : 'rgba(120,95,60,.06)';
-    c.fillRect(x, R() * 60, 1 + R() * 2, 60 + R() * 100);
+    c.fillStyle = R() < 0.6 ? 'rgba(255,255,255,.045)' : 'rgba(120,95,60,.035)';
+    c.fillRect(x, R() * 40, 1 + R() * 2, 40 + R() * 120);
   }
   textures.enamel = en;
   const nz = mkOff(); nz.width = nz.height = 96;

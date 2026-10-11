@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildRig, depthPrior, symmetryPartners, tessTriangles, R_HAIR, R_FACE } from './model.js';
 import { syntheticFace } from './synthetic.js';
-import { OVAL } from './landmarks.js';
+import { OVAL, EYE, EYM } from './landmarks.js';
 
 // a stand-in for FaceLandmarker.FACE_LANDMARKS_TESSELATION: a dense edge soup
 // built from the synthetic point set so the rig gets real topology to chew on.
@@ -92,5 +92,14 @@ describe('head model', () => {
     const { tris } = tessTriangles(tess, 478);
     expect(tris.length % 3).toBe(0);
     expect(tris.length).toBeGreaterThan(0);
+  });
+
+  it('uses MediaPipe eye contours on the correct face side', () => {
+    expect(EYE[0][0]).toBe(263);
+    expect(EYE[0][8]).toBe(362);
+    expect(EYE[1][0]).toBe(33);
+    expect(EYE[1][8]).toBe(133);
+    expect(EYM[0]).toEqual([386, 374, 362, 263]);
+    expect(EYM[1]).toEqual([159, 145, 33, 133]);
   });
 });

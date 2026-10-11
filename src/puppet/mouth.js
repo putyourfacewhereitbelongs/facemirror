@@ -314,7 +314,7 @@ export function drawTeeth(ctx, teeth, o) {
   if (!teeth.length || h <= 0.4) return;
   ctx.save();
   if (alpha < 1) ctx.globalAlpha = clamp(alpha, 0, 1);
-  const base = clamp(0.62 + lum * 0.5, 0.7, 1.05) * bright;
+  const base = clamp(0.46 + lum * 0.32, 0.52, 0.88) * bright;
   for (const t of teeth) {
     const path = () => {
       ctx.beginPath();
@@ -326,30 +326,55 @@ export function drawTeeth(ctx, teeth, o) {
       ctx.lineTo(t.B0.x, t.B0.y);
       ctx.closePath();
     };
-    // enamel texture, mapped onto the crown
+    const tone = clamp(base * t.lambert, 0.18, 0.7);
+    const coolShift = (t.sd > 0 ? 0.08 : -0.04) + (t.j % 4) * 0.012;
+    const warmTint = (warm || 0) * 0.16;
+    ctx.save();
+    path(); ctx.clip();
+    const body = ctx.createLinearGradient(t.A0.x, t.A0.y, t.B0.x, t.B0.y + 18);
+    body.addColorStop(0, `rgba(${246 - coolShift * 24}, ${239 - warmTint * 10}, ${230 - coolShift * 16}, ${0.82})`);
+    body.addColorStop(0.38, `rgba(${236 - coolShift * 16}, ${224 - warmTint * 8}, ${207 - coolShift * 12}, ${0.9})`);
+    body.addColorStop(0.75, `rgba(${214 - coolShift * 8}, ${200 - warmTint * 7}, ${181 - coolShift * 6}, ${0.82})`);
+    body.addColorStop(1, `rgba(${189 - coolShift * 8}, ${170 - warmTint * 5}, ${149 - coolShift * 2}, ${0.75})`);
+    ctx.fillStyle = body; ctx.fillRect(t.A0.x - 12, t.A0.y - 12, Math.abs(t.B0.x - t.A0.x) + 24, Math.abs(t.B0.y - t.A0.y) + 24);
+
+    const subsurface = ctx.createRadialGradient((t.A0.x + t.B0.x) / 2, (t.A0.y + t.B0.y) / 2, 2, (t.A0.x + t.B0.x) / 2, (t.A0.y + t.B0.y) / 2, Math.max(18, (Math.abs(t.B0.x - t.A0.x) + Math.abs(t.B0.y - t.A0.y)) * 0.75));
+    subsurface.addColorStop(0, `rgba(255,255,255,${0.12 + tone * 0.08})`);
+    subsurface.addColorStop(0.5, `rgba(243,232,219,${0.05 + tone * 0.04})`);
+    subsurface.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = subsurface; ctx.fillRect(t.A0.x - 18, t.A0.y - 22, Math.abs(t.B0.x - t.A0.x) + 36, Math.abs(t.B0.y - t.A0.y) + 44);
+
+    ctx.strokeStyle = `rgba(124,99,80,${0.06 + tone * 0.09})`;
+    ctx.lineWidth = Math.max(0.35, h * 0.016);
+    ctx.beginPath();
+    const mx = (t.A0.x + t.B0.x) / 2;
+    const my = (t.A0.y + t.B0.y) / 2;
+    ctx.moveTo(mx - 4, my - 2); ctx.quadraticCurveTo(mx, my - 5, mx + 4, my - 2);
+    ctx.moveTo(mx - 5, my + 2); ctx.quadraticCurveTo(mx, my - 1, mx + 5, my + 2);
+    ctx.moveTo(mx - 3, my + 6); ctx.quadraticCurveTo(mx, my + 3, mx + 3, my + 6);
+    ctx.stroke();
+
     if (tex && tex.enamel) {
-      ctx.save(); path(); ctx.clip();
       const b = t.texBasis;
       ctx.transform(b.ex, b.ey, b.fx, b.fy, b.ox, b.oy);
-      ctx.globalAlpha = clamp(base * t.lambert, 0.25, 1.25);
+      ctx.globalAlpha = 0.45 + tone * 0.2;
       ctx.drawImage(tex.enamel, (t.j * 29 + (t.sd > 0 ? 13 : 0)) % 80, 0, 48, 120, 0, 0, 48, 120);
-      ctx.restore();
-    } else { ctx.save(); path(); ctx.fillStyle = `rgba(240,236,224,${clamp(base * t.lambert, 0.2, 1)})`; ctx.fill(); ctx.restore(); }
-    // interproximal shading
+    }
+    ctx.restore();
+
     let g = ctx.createLinearGradient(t.A0.x, t.A0.y, t.B0.x, t.B0.y);
-    g.addColorStop(0, 'rgba(110,85,60,.4)'); g.addColorStop(0.3, 'rgba(110,85,60,0)');
-    g.addColorStop(0.7, 'rgba(110,85,60,0)'); g.addColorStop(1, 'rgba(110,85,60,.4)');
+    g.addColorStop(0, 'rgba(105,79,60,.22)'); g.addColorStop(0.35, 'rgba(105,79,60,0)');
+    g.addColorStop(0.65, 'rgba(105,79,60,0)'); g.addColorStop(1, 'rgba(105,79,60,.2)');
     path(); ctx.fillStyle = g; ctx.fill();
-    // ambient occlusion toward the corners and behind the lower arch
-    path(); ctx.fillStyle = `rgba(45,18,16,${t.ao})`; ctx.fill();
-    // specular sweep: a soft band that travels with head yaw
-    const sx = clamp(0.5 + yaw * 0.55, 0.05, 0.95);
+    path(); ctx.fillStyle = `rgba(38,15,14,${Math.max(0, t.ao * 0.55)})`; ctx.fill();
+
+    const sx = clamp(0.56 + yaw * 0.42, 0.12, 0.88);
     g = ctx.createLinearGradient(t.A0.x, t.A0.y, t.B0.x, t.B0.y);
-    g.addColorStop(clamp(sx - 0.16, 0, 1), 'rgba(255,255,255,0)');
-    g.addColorStop(sx, `rgba(255,255,255,${0.16 * t.depth})`);
-    g.addColorStop(clamp(sx + 0.16, 0, 1), 'rgba(255,255,255,0)');
+    g.addColorStop(clamp(sx - 0.18, 0, 1), 'rgba(255,255,255,0)');
+    g.addColorStop(sx, `rgba(255,255,255,${0.04 + 0.06 * t.depth})`);
+    g.addColorStop(clamp(sx + 0.18, 0, 1), 'rgba(255,255,255,0)');
     path(); ctx.fillStyle = g; ctx.fill();
-    if (warm > 0.01) { path(); ctx.fillStyle = `rgba(205,165,80,${warm * 0.2})`; ctx.fill(); }
+    if (warm > 0.01) { path(); ctx.fillStyle = `rgba(194,151,88,${warm * 0.08})`; ctx.fill(); }
   }
   // translucent incisal edges
   ctx.globalCompositeOperation = 'destination-out';
