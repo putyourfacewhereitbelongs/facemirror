@@ -1,26 +1,29 @@
 # Third-party notices
 
-## LivePortrait
+FaceMirror-3D vendors its runtime dependencies so the app runs offline after
+the first load and never depends on a live download.
 
-The optional browser neural renderer uses ONNX conversions derived from
-[LivePortrait](https://github.com/KlingAIResearch/LivePortrait), licensed under
-the MIT License. Model files are downloaded directly by the user's browser on
-first use and cached locally; they are not committed to this repository.
+## three.js (0.186.1) — MIT License
 
-Copyright (c) 2024 KwaiVGI and LivePortrait contributors.
+Vendored at `vendor/three.module.js`, `vendor/three.core.js`,
+`vendor/examples/jsm/` (GLTFLoader, GLTFExporter, OrbitControls,
+BufferGeometryUtils, SkeletonUtils).
+Copyright © 2010-2026 three.js authors. <https://github.com/mrdoob/three.js>
 
-## Timeline Studio WebGPU implementation
+## MediaPipe Tasks Vision (1.1.0) — Apache License 2.0
 
-Parts of the LivePortrait WebGPU loading, tensor preprocessing, keypoint
-transformation, and model-pipeline structure were adapted from
-[Timeline Studio / ai-video-editor](https://github.com/MartinDelophy/ai-video-editor),
-licensed under the MIT License.
+Vendored at `vendor/tasks-vision/` (`vision_bundle.mjs` + wasm).
+Copyright © Google LLC. <https://github.com/google-ai-edge/mediapipe>
 
-Copyright (c) 2026 MartinDelophy.
+## MediaPipe Face Landmarker model (float16/1) — Apache License 2.0
 
-## MediaPipe
+`assets/face_landmarker.task` (and `vendor/face_landmarker.task`),
+3,758,596 bytes, sha256
+`64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff`.
+<https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task>
 
-MediaPipe Face Mesh runtime assets are distributed under the Apache License 2.0.
+## stabilizeBlink math
 
-These notices supplement, and do not replace, the license files and model cards
-provided by each upstream project.
+The blink-stabilization math in `src/eyes.js` is a clean-room port of the
+idea from KalidoKit (MIT) — the library itself is **not** a dependency and
+its pre-blendshape face solver is deliberately not used.
