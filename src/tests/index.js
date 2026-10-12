@@ -12,4 +12,5 @@ import './drag.test.js';
 import './channels.test.js';
 import './calibrate.test.js';
 import './recorder.test.js';
+import './imageWarp.test.js';
 import './smoke.test.js';

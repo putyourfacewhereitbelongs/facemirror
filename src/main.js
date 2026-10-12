@@ -19,9 +19,10 @@ import { PoseTracker } from './pose.js';
 import { EmotionController, EmotionReadback, EMOTION_LABELS } from './emotions.js';
 import { DragController, CONTROLS, computeJacobian, makeJacobian, assetHash } from './drag.js';
 import {
-  loadGlbHead, buildProceduralHead, MirrorSkin, buildMirrorPatch,
-  proceduralMorphDelta, CONFIG as HEAD_CONFIG,
+  loadGlbHead, buildProceduralHead, buildImageHead, makeSamplePortraitCanvas,
+  MirrorSkin, buildMirrorPatch, proceduralMorphDelta, CONFIG as HEAD_CONFIG,
 } from './headAsset.js';
+import { evaluateControlAnchorMorphed } from './imageWarp.js';
 import { Stage } from './renderer.js';
 import { Recorder, buildClipGlb } from './recorder.js';
 import { PerfGovernor } from './perf.js';
@@ -99,6 +100,15 @@ const ui = new UI({
 let stage = null;
 /** @type {import('./headAsset.js').HeadAsset|null} */
 let headAsset = null;
+/** @type {import('./headAsset.js').HeadAsset|null} */
+let saved3dAsset = null;
+/** @type {import('./headAsset.js').HeadAsset|null} */
+let imageAsset = null;
+/** @type {{name: string, badge: string, thumbUrl: string, detectedWeights: Float32Array|null, hasFace: boolean}|null} */
+let imageMeta = null;
+let warpScale = 1.0;
+let imageTilt = 0.4;
+let showImagePoints = true;
 let mirrorSkin = null;
 let mirrorPatch = null;
 let mirrorMode = true;
@@ -120,8 +130,18 @@ const drag = new DragController({
     }
   },
   onEdit: () => {
-    for (const name of CONTROLS.flatMap((c) => c.channels)) {
-      ui.setSlider(name, rig.weightsSource.manual[CH[name]] ?? 0);
+    const activeCtrl = CONTROLS[drag.active];
+    const names = activeCtrl ? activeCtrl.channels : CONTROLS.flatMap((c) => c.channels);
+    for (const name of names) {
+      const idx = CH[name];
+      if (idx === undefined) continue;
+      const val = Math.min(Math.max(rig.weightsSource.drag[idx], 0), 1);
+      rig.weightsSource.manual[idx] = val;
+      ui.setSlider(name, val);
+      ui.setPin(name, true);
+    }
+    if (ghost && ghost.visible && drag.active >= 0 && headAsset) {
+      ghost.position.copy(controlWorld(drag.active));
     }
   },
 });
@@ -175,12 +195,28 @@ const CONTROL_ANCHORS = [
   [-0.52, -0.05, 0.42], [0.52, -0.05, 0.42],
 ];
 
+const _ctrlTmp3 = new Float32Array(3);
+
 /**
  * @param {number} c control index
  * @returns {import('three').Vector3}
  */
 function controlWorld(c) {
-  const a = CONTROL_ANCHORS[c] ?? [0, 0, 0];
+  if (headAsset && headAsset.isImage && headAsset.features) {
+    evaluateControlAnchorMorphed(
+      c,
+      rig.weights,
+      CHANNELS,
+      headAsset.features,
+      _ctrlTmp3,
+      headAsset.warpScale ?? 1
+    );
+    const v = new THREE.Vector3(_ctrlTmp3[0], _ctrlTmp3[1], _ctrlTmp3[2]);
+    stage.headNode.localToWorld(v);
+    return v;
+  }
+  const anchors = headAsset?.controlAnchors ?? CONTROL_ANCHORS;
+  const a = anchors[c] ?? [0, 0, 0];
   const v = new THREE.Vector3(a[0], a[1], a[2]);
   stage.headNode.localToWorld(v);
   return v;
@@ -312,9 +348,33 @@ let emotionSolo = null;
 
 ui.cb = {
   onMirrorToggle: () => startCamera(),
+  onImageFile: (file) => loadImageFromFile(file),
+  onImageSample: () => {
+    const sample = makeSamplePortraitCanvas(640, 800);
+    installUserImage(sample, 'Sample Portrait');
+  },
+  onImageToggleMode: () => toggleImageMode(),
+  onImageMatchExpression: () => matchImageExpression(),
+  onWarpScale: (v) => {
+    warpScale = v;
+    if (imageAsset && imageAsset.setWarpScale) imageAsset.setWarpScale(v);
+    persistUi();
+  },
+  onImageTilt: (v) => {
+    imageTilt = v;
+    if (stage) stage.imageTiltScale = v;
+    persistUi();
+  },
+  onImagePointsToggle: (on) => {
+    showImagePoints = on;
+    if (imageAsset && imageAsset.setControlPointsVisible) {
+      imageAsset.setControlPointsVisible(on);
+    }
+    persistUi();
+  },
   onMirrorSkin: () => {
     mirrorMode = !mirrorMode;
-    if (mirrorPatch) mirrorPatch.visible = mirrorMode && !!tracker.stream;
+    if (mirrorPatch) mirrorPatch.visible = mirrorMode && !!tracker.stream && !headAsset?.isImage;
     if (mirrorSkin) mirrorSkin.enabled = mirrorMode;
     ui.setMirrorSkin(mirrorMode);
     ui.setStatus(mirrorMode ? 'Mirror Skin on' : 'Mirror Skin off', 'ok');
@@ -426,6 +486,9 @@ function persistUi() {
     headLag: pose.neckLagSec,
     toggles: eyes.toggles,
     mirrorMode,
+    warpScale,
+    imageTilt,
+    showImagePoints,
   });
 }
 
@@ -516,11 +579,22 @@ let mirrorPatchPending = false;
 async function installHead(buffer) {
   try {
     const asset = await loadGlbHead(buffer);
+    saved3dAsset = asset;
     stage.setHead(asset);
     headAsset = asset;
     rig.hasTeeth = asset.hasTeeth || asset.hasTongue;
     for (const w of asset.warnings) console.warn('[head]', w);
     ui.setStatus(`GLB head loaded (${asset.missingChannels.length} channels missing)`, 'ok');
+    if (imageMeta) {
+      ui.setImageState({
+        active: false,
+        hasImage: true,
+        name: imageMeta.name,
+        badge: imageMeta.badge,
+        thumbUrl: imageMeta.thumbUrl,
+        canMatch: imageMeta.hasFace,
+      });
+    }
     installMirrorPatch();
     installDragJacobian(asset);
   } catch (err) {
@@ -528,8 +602,154 @@ async function installHead(buffer) {
   }
 }
 
+/**
+ * Load a user-selected image file (from file input, drag-and-drop, or paste),
+ * scale to a safe working resolution, detect face landmarks, and build the
+ * 2D warpable image mesh.
+ *
+ * @param {File|Blob} file
+ */
+async function loadImageFromFile(file) {
+  const label = (/** @type {File} */ (file).name) || 'Pasted Image';
+  ui.setStatus(`Loading image: ${label}…`, 'ok');
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('Could not decode image file'));
+      el.src = url;
+    });
+    const maxDim = 1024;
+    const nw = img.naturalWidth || img.width || 640;
+    const nh = img.naturalHeight || img.height || 800;
+    const scale = Math.min(1, maxDim / Math.max(nw, nh, 1));
+    const cw = Math.max(1, Math.round(nw * scale));
+    const ch = Math.max(1, Math.round(nh * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = cw;
+    canvas.height = ch;
+    const ctx = canvas.getContext('2d');
+    if (ctx) ctx.drawImage(img, 0, 0, cw, ch);
+    await installUserImage(canvas, label);
+  } catch (err) {
+    ui.setStatus('Image load failed: ' + (err?.message ?? err), 'error');
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/**
+ * Detect face landmarks on a canvas and install it as the active 2D warped
+ * image puppet on the stage.
+ *
+ * @param {HTMLCanvasElement} canvas
+ * @param {string} name
+ */
+async function installUserImage(canvas, name) {
+  ui.setStatus(`Analyzing face in "${name}"…`, 'ok');
+  const det = await tracker.detectImage(canvas);
+  const id = `${name}:${canvas.width}x${canvas.height}:${Date.now()}`;
+  const asset = buildImageHead(canvas, det.landmarks, {
+    warpScale,
+    showControls: showImagePoints,
+    id,
+  });
+  imageAsset = asset;
+  if (stage) {
+    stage.imageTiltScale = imageTilt;
+    stage.setHead(asset);
+  }
+  headAsset = asset;
+  rig.hasTeeth = true;
+  if (mirrorPatch) mirrorPatch.visible = false;
+  installDragJacobian(asset);
+
+  let thumbUrl = '';
+  try {
+    thumbUrl = canvas.toDataURL('image/jpeg', 0.82);
+  } catch {
+    thumbUrl = '';
+  }
+  const badge = det.hasFace
+    ? '✓ 478 face landmarks detected'
+    : 'Centered face warp map';
+  imageMeta = {
+    name: `${name} (${canvas.width}×${canvas.height})`,
+    badge,
+    thumbUrl,
+    detectedWeights: det.hasFace ? det.weights : null,
+    hasFace: det.hasFace,
+  };
+  ui.setImageState({
+    active: true,
+    hasImage: true,
+    name: imageMeta.name,
+    badge: imageMeta.badge,
+    thumbUrl: imageMeta.thumbUrl,
+    canMatch: imageMeta.hasFace,
+  });
+  ui.setStatus(
+    det.hasFace
+      ? `Image ready: ${name} — drag face parts, pick emotions, or use webcam`
+      : `Image ready: ${name} (canonical landmarks) — drag or animate`,
+    'ok'
+  );
+}
+
+/**
+ * Switch between the user-selected 2D image and the 3D head.
+ */
+function toggleImageMode() {
+  if (!imageAsset || !saved3dAsset || !stage) return;
+  const toImage = headAsset !== imageAsset;
+  const next = toImage ? imageAsset : saved3dAsset;
+  stage.setHead(next);
+  headAsset = next;
+  rig.hasTeeth = next.hasTeeth || next.hasTongue;
+  if (mirrorPatch) {
+    mirrorPatch.visible = !toImage && mirrorMode && !!tracker.stream;
+  }
+  installDragJacobian(next);
+  if (imageMeta) {
+    ui.setImageState({
+      active: toImage,
+      hasImage: true,
+      name: imageMeta.name,
+      badge: imageMeta.badge,
+      thumbUrl: imageMeta.thumbUrl,
+      canMatch: imageMeta.hasFace,
+    });
+  }
+  ui.setStatus(toImage ? `Switched to 2D image: ${imageMeta?.name ?? ''}` : 'Switched to 3D head', 'ok');
+}
+
+/**
+ * Copy the blendshape expression detected on the user-selected photo onto
+ * the rig's manual sliders.
+ */
+function matchImageExpression() {
+  if (!imageMeta || !imageMeta.detectedWeights) {
+    ui.setStatus('No detected photo expression to match', 'warn');
+    return;
+  }
+  const raw = imageMeta.detectedWeights;
+  rig.feedCamera(raw);
+  for (let i = 0; i < CHANNELS.length; i++) {
+    const name = CHANNELS[i];
+    if (name === 'eyeBlinkLeft' || name === 'eyeBlinkRight') continue;
+    const v = Math.min(Math.max(rig.weightsSource.cam[i], 0), 1);
+    rig.setManual(name, v);
+    const pin = v > 0.08;
+    rig.setPin(name, pin);
+    ui.setSlider(name, v);
+    ui.setPin(name, pin);
+  }
+  ui.setStatus('Matched expression from selected photo (press 0 to reset)', 'ok');
+}
+
 function installMirrorPatch() {
-  if (!headAsset || !tracker.landmarks.length) return;
+  if (!headAsset || headAsset.isImage || !tracker.landmarks.length) return;
   if (mirrorPatch) {
     stage.headNode.remove(mirrorPatch);
     mirrorPatch = null;
@@ -550,8 +770,9 @@ function installMirrorPatch() {
 
 /**
  * Jacobian at load (§6): 52×2 evaluations, cached per asset hash.
- * Procedural heads sample the analytic morph fields; GLB heads evaluate the
- * real morph-target deltas at the mesh vertex nearest each control anchor.
+ * Procedural heads sample the analytic morph fields; GLB and 2D Image heads
+ * evaluate the real morph-target deltas at the mesh vertex nearest each
+ * control anchor.
  * @param {import('./headAsset.js').HeadAsset} asset
  */
 function installDragJacobian(asset) {
@@ -572,9 +793,10 @@ function installDragJacobian(asset) {
   const mesh = asset.meshes[0];
   const posAttr = mesh?.geometry?.attributes?.position;
   const morphAttrs = mesh?.geometry?.morphAttributes?.position ?? [];
+  const anchors = asset.controlAnchors ?? CONTROL_ANCHORS;
 
-  // Precompute the mesh vertex nearest each control anchor (GLB path).
-  const nearest = CONTROL_ANCHORS.map((a) => {
+  // Precompute the mesh vertex nearest each control anchor (GLB / 2D Image path).
+  const nearest = anchors.map((a) => {
     if (!posAttr) return -1;
     let best = 0;
     let bestD = Infinity;
@@ -590,7 +812,7 @@ function installDragJacobian(asset) {
 
   computeJacobian(J, 52, (w, out) => {
     for (let c = 0; c < CONTROLS.length; c++) {
-      const a = CONTROL_ANCHORS[c];
+      const a = anchors[c];
       if (asset.isProcedural || !posAttr) {
         const d = new Float32Array(3);
         out[c * 3] = a[0];
@@ -726,6 +948,9 @@ function frame(now) {
     stage.applyPose(ypr4, pose.pos, dtMs / 1000, idleActive);
     stage.render(rig.weights, rig.hasTeeth ? 1 : 0.65);
     if (headAsset && headAsset.setPupil && lastEyes) headAsset.setPupil(lastEyes.pupil);
+    if (headAsset && headAsset.setGaze && lastEyes) {
+      headAsset.setGaze(eyes.eyeInHeadYaw, eyes.eyeInHeadPitch, rig.weights);
+    }
     if (mirrorSkin && mirrorMode) mirrorSkin.update(now);
   }
   perf.stage.render = performance.now() - tRender;
@@ -771,6 +996,7 @@ async function boot() {
 
   // Procedural head first — the app must work with zero assets (§6).
   const proc = buildProceduralHead();
+  saved3dAsset = proc;
   stage.setHead(proc);
   headAsset = proc;
   rig.hasTeeth = true;
@@ -790,8 +1016,24 @@ async function boot() {
   if (st.headLag !== undefined) pose.neckLagSec = st.headLag;
   if (st.toggles) Object.assign(eyes.toggles, st.toggles);
   if (st.mirrorMode !== undefined) mirrorMode = st.mirrorMode;
+  if (st.warpScale !== undefined) {
+    warpScale = st.warpScale;
+    const wsEl = /** @type {HTMLInputElement|null} */ (ui.root.querySelector('#fm-warpscale'));
+    if (wsEl) wsEl.value = String(warpScale);
+  }
+  if (st.imageTilt !== undefined) {
+    imageTilt = st.imageTilt;
+    stage.imageTiltScale = imageTilt;
+    const itEl = /** @type {HTMLInputElement|null} */ (ui.root.querySelector('#fm-imgtilt'));
+    if (itEl) itEl.value = String(imageTilt);
+  }
+  if (st.showImagePoints !== undefined) {
+    showImagePoints = st.showImagePoints;
+    const ipEl = /** @type {HTMLInputElement|null} */ (ui.root.querySelector('#fm-imgpts'));
+    if (ipEl) ipEl.checked = showImagePoints;
+  }
 
-  // Drag + wheel/pinch dolly + GLB drop onto the canvas.
+  // Drag + wheel/pinch dolly + Image / GLB drop onto the canvas.
   const canvas = stage.canvas;
   /** @type {Map<number, {x: number, y: number}>} */
   const pointers = new Map();
@@ -842,7 +1084,27 @@ async function boot() {
   canvas.addEventListener('drop', async (e) => {
     e.preventDefault();
     const file = e.dataTransfer?.files?.[0];
-    if (file) installHead(await file.arrayBuffer());
+    if (!file) return;
+    const isImg = (file.type && file.type.startsWith('image/'))
+      || /\.(png|jpe?g|webp|gif|bmp|svg|avif)$/i.test(file.name ?? '');
+    if (isImg) {
+      await loadImageFromFile(file);
+    } else {
+      await installHead(await file.arrayBuffer());
+    }
+  });
+  window.addEventListener('paste', async (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.type && item.type.startsWith('image/')) {
+        const blob = item.getAsFile();
+        if (blob) {
+          await loadImageFromFile(blob);
+          break;
+        }
+      }
+    }
   });
 
   // Auto-load assets/head.glb when present (optional drop-in — §1/assets).
@@ -861,7 +1123,7 @@ async function boot() {
   // (permission must be a gesture), but also try once at boot for kiosk use.
   mirrorSkin = new MirrorSkin(ui.videoEl());
 
-  ui.setStatus('Ready — press Mirror or drop a head.glb on the canvas', 'ok');
+  ui.setStatus('Ready — press Select Image 🖼, Mirror (webcam), or drop a photo/GLB on canvas', 'ok');
   perf.selfCheck();
   requestAnimationFrame(frame);
 }

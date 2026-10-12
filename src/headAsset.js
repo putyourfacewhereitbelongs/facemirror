@@ -13,6 +13,15 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { CHANNELS, CH } from './rig.js';
 import { CONTROLS, computeJacobian, makeJacobian, assetHash } from './drag.js';
+import {
+  computeImagePlaneSize,
+  buildCanonicalImageLandmarks,
+  extractImageFeatures,
+  faceReliefZ,
+  imageMorphDelta,
+  evaluateControlAnchorMorphed,
+  CONFIG as IMAGE_WARP_CONFIG,
+} from './imageWarp.js';
 
 /** @type {Record<string, any>} */
 export const CONFIG = {
@@ -153,15 +162,20 @@ export async function loadGlbHead(buffer) {
  * @param {number} [jawCap] optional jawOpen cap (no-teeth assets)
  */
 export function applyWeights(asset, weights52, jawCap = 1) {
+  const warpScale = asset.warpScale ?? 1;
   for (const name of CHANNELS) {
     const targets = asset.morphMap[name];
     if (!targets) continue;
     let w = weights52[CH[name]];
     if (name === 'jawOpen' && w > jawCap) w = jawCap;
+    w *= warpScale;
     for (const t of targets) {
       const inf = t.mesh.morphTargetInfluences;
       if (inf) inf[t.index] = w;
     }
+  }
+  if (asset.updateControlPoints) {
+    asset.updateControlPoints(weights52);
   }
   // Eye bones (trap §11.3 naming resolved upstream; look weights are read
   // from the eyeLook* channels).
@@ -600,3 +614,443 @@ export class MirrorSkin {
     return true;
   }
 }
+
+// ---------------------------------------------------------------------------
+// 2D User-Selected Image Mesh + Landmark-Anchored 52-Channel Warping
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a 2D/2.5D warpable image head asset from a user-selected image
+ * (HTMLCanvasElement, HTMLImageElement, or ImageBitmap) and 478 normalized
+ * landmarks (detected via MediaPipe FaceLandmarker or canonical fallback).
+ *
+ * All 52 ARKit blendshapes are precomputed into morph targets anchored at the
+ * photo's facial landmarks, so webcam mirroring, emotion presets, 52 sliders,
+ * automatic blinks/saccades, and 16-point click-drag sculpting all animate the
+ * photo directly.
+ *
+ * @param {HTMLCanvasElement|HTMLImageElement|ImageBitmap|{width:number,height:number}} imageSource
+ * @param {Array<{x: number, y: number, z?: number}>|null} [landmarks478]
+ * @param {{warpScale?: number, showControls?: boolean, id?: string}} [opts]
+ */
+export function buildImageHead(imageSource, landmarks478 = null, opts = {}) {
+  const imgW = imageSource?.width || imageSource?.naturalWidth || 640;
+  const imgH = imageSource?.height || imageSource?.naturalHeight || 800;
+  const planeSpec = computeImagePlaneSize(imgW, imgH);
+  const features = extractImageFeatures(landmarks478, planeSpec);
+
+  const W = IMAGE_WARP_CONFIG.gridSegmentsW;
+  const H = IMAGE_WARP_CONFIG.gridSegmentsH;
+  const vertCount = (W + 1) * (H + 1);
+  const positions = new Float32Array(vertCount * 3);
+  const uvs = new Float32Array(vertCount * 2);
+  const uGrid = new Float32Array(vertCount);
+  const vGrid = new Float32Array(vertCount);
+  const indices = [];
+
+  let vi = 0;
+  for (let j = 0; j <= H; j++) {
+    const v = j / H; // 0 = top of image, 1 = bottom of image
+    const y = (0.5 - v) * planeSpec.planeH + planeSpec.centerY;
+    for (let i = 0; i <= W; i++) {
+      const u = i / W; // 0 = left of image, 1 = right of image
+      const x = (u - 0.5) * planeSpec.planeW;
+      const z = faceReliefZ(x, y, u, v, features);
+      positions[vi * 3] = x;
+      positions[vi * 3 + 1] = y;
+      positions[vi * 3 + 2] = z;
+      uvs[vi * 2] = u;
+      uvs[vi * 2 + 1] = 1 - v;
+      uGrid[vi] = u;
+      vGrid[vi] = v;
+      vi++;
+    }
+  }
+
+  for (let j = 0; j < H; j++) {
+    for (let i = 0; i < W; i++) {
+      const a = j * (W + 1) + i;
+      const b = a + 1;
+      const c = a + (W + 1);
+      const d = c + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+
+  // Texture from the user-selected image (unlit MeshBasicMaterial preserves
+  // true photo colors without ACES tone-mapping washout).
+  const tex = new THREE.Texture(/** @type {any} */ (imageSource));
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.generateMipmaps = false;
+  tex.needsUpdate = true;
+
+  const mat = new THREE.MeshBasicMaterial({
+    map: tex,
+    toneMapped: false,
+    side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+
+  // Build all 52 ARKit morph targets anchored to the image's landmarks.
+  const morphs = [];
+  /** @type {Record<string, Array<{mesh: THREE.Mesh, index: number}>>} */
+  const morphMap = {};
+  const delta = new Float32Array(3);
+  for (const name of CHANNELS) {
+    const arr = new Float32Array(vertCount * 3);
+    for (let k = 0; k < vertCount; k++) {
+      const x = positions[k * 3];
+      const y = positions[k * 3 + 1];
+      imageMorphDelta(name, x, y, uGrid[k], vGrid[k], features, delta);
+      arr[k * 3] = delta[0];
+      arr[k * 3 + 1] = delta[1];
+      arr[k * 3 + 2] = delta[2];
+    }
+    morphs.push(new THREE.Float32BufferAttribute(arr, 3));
+    morphMap[name] = [{ mesh, index: morphs.length - 1 }];
+  }
+  geo.morphAttributes.position = morphs;
+  geo.morphTargetsRelative = true;
+  mesh.morphTargetInfluences = new Array(morphs.length).fill(0);
+  mesh.morphTargetDictionary = Object.fromEntries(CHANNELS.map((n, idx) => [n, idx]));
+
+  // Subtle studio frame backing behind the image edge.
+  const frameGeo = new THREE.PlaneGeometry(planeSpec.planeW + 0.03, planeSpec.planeH + 0.03);
+  const frameMat = new THREE.MeshBasicMaterial({
+    color: 0x1c2433,
+    toneMapped: false,
+  });
+  const frameMesh = new THREE.Mesh(frameGeo, frameMat);
+  frameMesh.position.set(0, planeSpec.centerY, planeSpec.baseZ - 0.012);
+
+  // Interactive 16-control-point overlay markers so the user can see and
+  // grab the sculpt handles right on their selected photo.
+  const controlGroup = new THREE.Group();
+  controlGroup.visible = opts.showControls !== false;
+  const ringGeo = new THREE.RingGeometry(0.011, 0.018, 18);
+  const dotGeo = new THREE.CircleGeometry(0.006, 14);
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: 0x66e0b0,
+    transparent: true,
+    opacity: 0.72,
+    depthTest: false,
+    toneMapped: false,
+  });
+  const dotMat = new THREE.MeshBasicMaterial({
+    color: 0xf7b267,
+    transparent: true,
+    opacity: 0.85,
+    depthTest: false,
+    toneMapped: false,
+  });
+  /** @type {THREE.Object3D[]} */
+  const controlMarkers = [];
+  for (let c = 0; c < CONTROLS.length; c++) {
+    const a = features.controlAnchors[c];
+    const holder = new THREE.Group();
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    const dot = new THREE.Mesh(dotGeo, dotMat);
+    ring.renderOrder = 10;
+    dot.renderOrder = 11;
+    holder.add(ring, dot);
+    holder.position.set(a[0], a[1], a[2] + 0.01);
+    controlGroup.add(holder);
+    controlMarkers.push(holder);
+  }
+
+  const root = new THREE.Group();
+  root.add(frameMesh, mesh, controlGroup);
+
+  const morphedPt = new Float32Array(3);
+  const asset = {
+    root,
+    meshes: [mesh],
+    morphMap,
+    warnings: [],
+    missingChannels: [],
+    eyeNodes: { left: null, right: null },
+    hasTeeth: true,
+    hasTongue: true,
+    isProcedural: false,
+    isImage: true,
+    imageSource,
+    imageTexture: tex,
+    features,
+    controlAnchors: features.controlAnchors,
+    warpScale: opts.warpScale ?? 1,
+    hash: assetHash(
+      'image:v1:' + (opts.id ?? `${imgW}x${imgH}:${features.mouth.cornerL[0].toFixed(3)}`)
+    ),
+    /**
+     * Update the 16 control-point visual markers to follow the warped mesh.
+     * @param {Float32Array} weights52
+     */
+    updateControlPoints(weights52) {
+      if (!controlGroup.visible) return;
+      for (let c = 0; c < controlMarkers.length; c++) {
+        evaluateControlAnchorMorphed(c, weights52, CHANNELS, features, morphedPt, asset.warpScale);
+        controlMarkers[c].position.set(morphedPt[0], morphedPt[1], morphedPt[2] + 0.01);
+      }
+    },
+    /**
+     * Toggle visibility of the 16 sculpt markers on the photo.
+     * @param {boolean} visible
+     */
+    setControlPointsVisible(visible) {
+      controlGroup.visible = !!visible;
+    },
+    /**
+     * Set overall warp multiplier (0.2..2.5).
+     * @param {number} scale
+     */
+    setWarpScale(scale) {
+      asset.warpScale = Math.min(Math.max(scale, 0.1), 3.0);
+    },
+    /**
+     * Drive the 2D image's eye-look morphs from EyeSolver gaze + sliders.
+     * @param {number} inYawRad
+     * @param {number} inPitchRad
+     * @param {Float32Array} weights52
+     */
+    setGaze(inYawRad, inPitchRad, weights52) {
+      const inf = mesh.morphTargetInfluences;
+      if (!inf) return;
+      const ws = asset.warpScale ?? 1;
+      const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+      const gRight = clamp01(inYawRad / 0.36);
+      const gLeft = clamp01(-inYawRad / 0.36);
+      const gUp = clamp01(inPitchRad / 0.28);
+      const gDown = clamp01(-inPitchRad / 0.28);
+
+      inf[CH.eyeLookOutLeft] = Math.max(weights52[CH.eyeLookOutLeft] ?? 0, gLeft) * ws;
+      inf[CH.eyeLookInLeft] = Math.max(weights52[CH.eyeLookInLeft] ?? 0, gRight) * ws;
+      inf[CH.eyeLookOutRight] = Math.max(weights52[CH.eyeLookOutRight] ?? 0, gRight) * ws;
+      inf[CH.eyeLookInRight] = Math.max(weights52[CH.eyeLookInRight] ?? 0, gLeft) * ws;
+      inf[CH.eyeLookUpLeft] = Math.max(weights52[CH.eyeLookUpLeft] ?? 0, gUp) * ws;
+      inf[CH.eyeLookUpRight] = Math.max(weights52[CH.eyeLookUpRight] ?? 0, gUp) * ws;
+      inf[CH.eyeLookDownLeft] = Math.max(weights52[CH.eyeLookDownLeft] ?? 0, gDown) * ws;
+      inf[CH.eyeLookDownRight] = Math.max(weights52[CH.eyeLookDownRight] ?? 0, gDown) * ws;
+    },
+  };
+
+  return asset;
+}
+
+/**
+ * Generate a built-in illustrated portrait canvas aligned with the canonical
+ * 478 landmarks so users can test 2D image warping with one click even before
+ * picking a photo from disk.
+ *
+ * @param {number} [W]
+ * @param {number} [H]
+ * @returns {HTMLCanvasElement}
+ */
+export function makeSamplePortraitCanvas(W = 640, H = 800) {
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const g = canvas.getContext('2d');
+  if (!g) return canvas;
+
+  // Studio portrait backdrop
+  const bg = g.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#1e293b');
+  bg.addColorStop(0.55, '#172030');
+  bg.addColorStop(1, '#0f141e');
+  g.fillStyle = bg;
+  g.fillRect(0, 0, W, H);
+
+  // Soft ambient halo
+  const halo = g.createRadialGradient(W * 0.5, H * 0.45, W * 0.06, W * 0.5, H * 0.45, W * 0.52);
+  halo.addColorStop(0, 'rgba(102, 224, 176, 0.14)');
+  halo.addColorStop(1, 'rgba(102, 224, 176, 0)');
+  g.fillStyle = halo;
+  g.fillRect(0, 0, W, H);
+
+  // Back hair / shoulders
+  g.fillStyle = '#1b2434';
+  g.beginPath();
+  g.ellipse(W * 0.5, H * 0.96, W * 0.40, H * 0.20, 0, Math.PI, 0, false);
+  g.fill();
+
+  // Neck
+  const neckGrad = g.createLinearGradient(W * 0.4, H * 0.68, W * 0.6, H * 0.86);
+  neckGrad.addColorStop(0, '#be8c73');
+  neckGrad.addColorStop(1, '#9d6e58');
+  g.fillStyle = neckGrad;
+  g.beginPath();
+  g.roundRect(W * 0.41, H * 0.67, W * 0.18, H * 0.20, 24);
+  g.fill();
+
+  // Ears
+  g.fillStyle = '#c8967c';
+  g.beginPath();
+  g.ellipse(W * 0.255, H * 0.46, W * 0.032, H * 0.058, -0.1, 0, Math.PI * 2);
+  g.ellipse(W * 0.745, H * 0.46, W * 0.032, H * 0.058, 0.1, 0, Math.PI * 2);
+  g.fill();
+
+  // Face oval (aligned with canonical landmarks)
+  const skin = g.createRadialGradient(W * 0.48, H * 0.43, W * 0.04, W * 0.5, H * 0.48, W * 0.30);
+  skin.addColorStop(0, '#eabfa6');
+  skin.addColorStop(0.65, '#d6a389');
+  skin.addColorStop(1, '#b68168');
+  g.fillStyle = skin;
+  g.beginPath();
+  g.moveTo(W * 0.50, H * 0.20);
+  g.bezierCurveTo(W * 0.72, H * 0.20, W * 0.75, H * 0.40, W * 0.71, H * 0.57);
+  g.bezierCurveTo(W * 0.68, H * 0.67, W * 0.59, H * 0.75, W * 0.50, H * 0.755);
+  g.bezierCurveTo(W * 0.41, H * 0.75, W * 0.32, H * 0.67, W * 0.29, H * 0.57);
+  g.bezierCurveTo(W * 0.25, H * 0.40, W * 0.28, H * 0.20, W * 0.50, H * 0.20);
+  g.closePath();
+  g.fill();
+
+  // Cheek blush
+  for (const cx of [0.34, 0.66]) {
+    const blush = g.createRadialGradient(W * cx, H * 0.52, 4, W * cx, H * 0.52, W * 0.085);
+    blush.addColorStop(0, 'rgba(218, 112, 102, 0.28)');
+    blush.addColorStop(1, 'rgba(218, 112, 102, 0)');
+    g.fillStyle = blush;
+    g.beginPath();
+    g.arc(W * cx, H * 0.52, W * 0.085, 0, Math.PI * 2);
+    g.fill();
+  }
+
+  // Hair crown
+  const hair = g.createLinearGradient(0, H * 0.14, 0, H * 0.40);
+  hair.addColorStop(0, '#2a211d');
+  hair.addColorStop(1, '#1c1512');
+  g.fillStyle = hair;
+  g.beginPath();
+  g.moveTo(W * 0.26, H * 0.43);
+  g.bezierCurveTo(W * 0.23, H * 0.22, W * 0.35, H * 0.13, W * 0.50, H * 0.14);
+  g.bezierCurveTo(W * 0.66, H * 0.13, W * 0.77, H * 0.22, W * 0.74, H * 0.43);
+  g.bezierCurveTo(W * 0.71, H * 0.30, W * 0.61, H * 0.24, W * 0.48, H * 0.25);
+  g.bezierCurveTo(W * 0.36, H * 0.24, W * 0.29, H * 0.30, W * 0.26, H * 0.43);
+  g.closePath();
+  g.fill();
+
+  // Eyebrows (left ~ 0.32..0.435, y ~ 0.332..0.355; right ~ 0.565..0.68)
+  g.strokeStyle = '#2d201a';
+  g.lineCap = 'round';
+  g.lineWidth = W * 0.019;
+  g.beginPath();
+  g.moveTo(W * 0.320, H * 0.355);
+  g.quadraticCurveTo(W * 0.382, H * 0.324, W * 0.435, H * 0.348);
+  g.stroke();
+  g.beginPath();
+  g.moveTo(W * 0.565, H * 0.348);
+  g.quadraticCurveTo(W * 0.618, H * 0.324, W * 0.680, H * 0.355);
+  g.stroke();
+
+  // Eyes (left center 0.390, 0.415; right center 0.610, 0.415)
+  const drawEye = (cx, cy, outerX, innerX) => {
+    const rx = Math.abs(innerX - outerX) * 0.52;
+    const ry = H * 0.022;
+    g.save();
+    g.beginPath();
+    g.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+    g.clip();
+    // Sclera
+    g.fillStyle = '#f5f0ec';
+    g.fillRect(cx - rx, cy - ry, rx * 2, ry * 2);
+    // Iris
+    const ir = ry * 0.92;
+    const ig = g.createRadialGradient(cx, cy, ir * 0.15, cx, cy, ir);
+    ig.addColorStop(0, '#2c4c5e');
+    ig.addColorStop(0.65, '#3f6e82');
+    ig.addColorStop(1, '#1b2e38');
+    g.fillStyle = ig;
+    g.beginPath();
+    g.arc(cx, cy, ir, 0, Math.PI * 2);
+    g.fill();
+    // Pupil
+    g.fillStyle = '#0b0d12';
+    g.beginPath();
+    g.arc(cx, cy, ir * 0.42, 0, Math.PI * 2);
+    g.fill();
+    // Specular catchlight
+    g.fillStyle = 'rgba(255,255,255,0.85)';
+    g.beginPath();
+    g.arc(cx - ir * 0.28, cy - ir * 0.28, ir * 0.18, 0, Math.PI * 2);
+    g.fill();
+    g.restore();
+
+    // Upper lash line
+    g.strokeStyle = '#241914';
+    g.lineWidth = W * 0.008;
+    g.beginPath();
+    g.ellipse(cx, cy, rx, ry, 0, Math.PI, Math.PI * 2);
+    g.stroke();
+    // Lower lid line
+    g.strokeStyle = 'rgba(110, 74, 60, 0.55)';
+    g.lineWidth = W * 0.004;
+    g.beginPath();
+    g.ellipse(cx, cy, rx * 0.96, ry * 0.98, 0, 0, Math.PI);
+    g.stroke();
+  };
+  drawEye(W * 0.390, H * 0.415, W * 0.345, W * 0.435);
+  drawEye(W * 0.610, H * 0.415, W * 0.655, W * 0.565);
+
+  // Nose (bridge 0.50, 0.385 -> tip 0.50, 0.510; wings 0.452..0.548, 0.525)
+  g.strokeStyle = 'rgba(145, 96, 76, 0.55)';
+  g.lineWidth = W * 0.006;
+  g.beginPath();
+  g.moveTo(W * 0.485, H * 0.395);
+  g.quadraticCurveTo(W * 0.478, H * 0.465, W * 0.465, H * 0.512);
+  g.stroke();
+  g.fillStyle = 'rgba(255, 236, 222, 0.32)';
+  g.beginPath();
+  g.ellipse(W * 0.500, H * 0.506, W * 0.018, H * 0.015, 0, 0, Math.PI * 2);
+  g.fill();
+  g.strokeStyle = 'rgba(130, 82, 65, 0.72)';
+  g.lineWidth = W * 0.007;
+  g.beginPath();
+  g.moveTo(W * 0.452, H * 0.522);
+  g.quadraticCurveTo(W * 0.500, H * 0.538, W * 0.548, H * 0.522);
+  g.stroke();
+
+  // Lips (corners 0.405..0.595, 0.625; upper 0.598; lower 0.654)
+  // Upper lip
+  g.fillStyle = '#b96b64';
+  g.beginPath();
+  g.moveTo(W * 0.405, H * 0.625);
+  g.quadraticCurveTo(W * 0.455, H * 0.592, W * 0.485, H * 0.602);
+  g.quadraticCurveTo(W * 0.500, H * 0.608, W * 0.515, H * 0.602);
+  g.quadraticCurveTo(W * 0.545, H * 0.592, W * 0.595, H * 0.625);
+  g.quadraticCurveTo(W * 0.500, H * 0.628, W * 0.405, H * 0.625);
+  g.closePath();
+  g.fill();
+
+  // Lower lip
+  const lipGrad = g.createLinearGradient(0, H * 0.624, 0, H * 0.658);
+  lipGrad.addColorStop(0, '#c97b73');
+  lipGrad.addColorStop(0.55, '#d48980');
+  lipGrad.addColorStop(1, '#a85d56');
+  g.fillStyle = lipGrad;
+  g.beginPath();
+  g.moveTo(W * 0.405, H * 0.625);
+  g.quadraticCurveTo(W * 0.500, H * 0.628, W * 0.595, H * 0.625);
+  g.quadraticCurveTo(W * 0.555, H * 0.658, W * 0.500, H * 0.656);
+  g.quadraticCurveTo(W * 0.445, H * 0.658, W * 0.405, H * 0.625);
+  g.closePath();
+  g.fill();
+
+  // Lip parting line
+  g.strokeStyle = '#6e3430';
+  g.lineWidth = W * 0.005;
+  g.beginPath();
+  g.moveTo(W * 0.405, H * 0.625);
+  g.quadraticCurveTo(W * 0.500, H * 0.628, W * 0.595, H * 0.625);
+  g.stroke();
+
+  return canvas;
+}
+

@@ -400,6 +400,74 @@ export class Tracker {
   }
 
   /**
+   * Detect landmarks, blendshapes, and pose matrix on a single user-selected
+   * static image (HTMLCanvasElement, HTMLImageElement, or ImageBitmap).
+   * Safely switches the landmarker to IMAGE mode and back to VIDEO mode.
+   *
+   * @param {HTMLCanvasElement|HTMLImageElement|ImageBitmap} imageSource
+   * @returns {Promise<{hasFace: boolean, landmarks: Array<{x:number,y:number,z:number}>|null, weights: Float32Array, matrix: Float32Array|null}>}
+   */
+  async detectImage(imageSource) {
+    const weights = new Float32Array(CHANNELS.length);
+    const matrix = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+    if (this.fake) {
+      const r = this.fake.detect(0);
+      weights.set(r.weights);
+      matrix.set(r.matrix);
+      return {
+        hasFace: r.hasFace,
+        landmarks: r.landmarks.map((p) => ({ x: p.x, y: p.y, z: p.z })),
+        weights,
+        matrix,
+      };
+    }
+    try {
+      await this.initLandmarker();
+      if (!this.landmarker) {
+        return { hasFace: false, landmarks: null, weights, matrix: null };
+      }
+      let res = null;
+      if (typeof this.landmarker.setOptions === 'function' && typeof this.landmarker.detect === 'function') {
+        await this.landmarker.setOptions({ runningMode: 'IMAGE' });
+        try {
+          res = this.landmarker.detect(imageSource);
+        } finally {
+          await this.landmarker.setOptions({ runningMode: 'VIDEO' });
+          const now = typeof performance !== 'undefined' ? performance.now() : 0;
+          this.lastTs = Math.max(this.lastTs, now) + 10;
+        }
+      } else {
+        const now = typeof performance !== 'undefined' ? performance.now() : 0;
+        const ts = Math.max(now, this.lastTs + 1);
+        this.lastTs = ts;
+        res = this.landmarker.detectForVideo(imageSource, ts);
+      }
+      const lm = res?.faceLandmarks?.[0] ?? null;
+      if (!lm) {
+        return { hasFace: false, landmarks: null, weights, matrix: null };
+      }
+      const bs = res?.faceBlendshapes?.[0];
+      if (bs?.categories) {
+        const idx = buildCategoryIndex(bs.categories);
+        for (let i = 0; i < bs.categories.length; i++) {
+          const ci = idx[i];
+          if (ci >= 0) weights[ci] = bs.categories[i].score;
+        }
+      }
+      const mat = res?.facialTransformationMatrixes?.[0]?.data;
+      if (mat) matrix.set(mat);
+      return {
+        hasFace: true,
+        landmarks: lm.map((p) => ({ x: p.x, y: p.y, z: p.z ?? 0 })),
+        weights,
+        matrix: mat ? matrix : null,
+      };
+    } catch {
+      return { hasFace: false, landmarks: null, weights, matrix: null };
+    }
+  }
+
+  /**
    * Per-rAF poll. Detects only on NEW video frames (§2) and only when the
    * perf governor's every-Nth gate allows.
    *

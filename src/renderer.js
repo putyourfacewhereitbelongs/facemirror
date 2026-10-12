@@ -195,6 +195,9 @@ export class Stage {
     /** @type {import('./headAsset.js').HeadAsset|null} */
     this.asset = null;
     this.renderScale = 1;
+    this.imageTiltScale = 0.4;
+    this._idQuat = new THREE.Quaternion(0, 0, 0, 1);
+    this._poseQuat = new THREE.Quaternion();
     this._t = 0;
   }
 
@@ -245,14 +248,21 @@ export class Stage {
    */
   applyPose(quat4, pos3, dtSec, idle) {
     this._t += dtSec;
-    this.headNode.quaternion.set(quat4[0], quat4[1], quat4[2], quat4[3]);
+    const isImg = !!(this.asset && this.asset.isImage);
+    const tilt = isImg ? Math.min(Math.max(this.imageTiltScale, 0), 1) : 1;
+    this._poseQuat.set(quat4[0], quat4[1], quat4[2], quat4[3]);
+    if (isImg) {
+      this.headNode.quaternion.copy(this._idQuat).slerp(this._poseQuat, tilt);
+    } else {
+      this.headNode.quaternion.copy(this._poseQuat);
+    }
     const breath = idle ? Math.sin(this._t * CONFIG.breathHz * 2 * Math.PI) * CONFIG.breathAmp : 0;
-    this.headNode.position.set(pos3[0], pos3[1] + breath, pos3[2]);
+    this.headNode.position.set(pos3[0] * tilt, pos3[1] * tilt + breath, pos3[2] * tilt);
     // Tiny anti-phase counter-rotate of the camera target for parallax feel
     // (§5.4): makes the head feel attached to a neck, not floating.
     this.cameraTarget.set(
-      -quat4[1] * CONFIG.antiParallax,
-      -quat4[0] * CONFIG.antiParallax * 0.6,
+      -quat4[1] * CONFIG.antiParallax * tilt,
+      -quat4[0] * CONFIG.antiParallax * 0.6 * tilt,
       0
     );
     this.camera.lookAt(this.cameraTarget);
@@ -276,28 +286,53 @@ export class Stage {
    */
   render(weights52, jawCap = 1) {
     if (!this.renderer) {
-      // 2D graceful fallback (§0.5): draw a liveliness meter so the app
-      // still "runs" without WebGL.
+      // 2D graceful fallback (§0.5): draw a liveliness meter (or the selected
+      // image when in 2D image mode) so the app still "runs" without WebGL.
       const g = this.ctx2d;
       if (g) {
         const w = this.canvas.width;
         const h = this.canvas.height;
         g.fillStyle = '#0b0d12';
         g.fillRect(0, 0, w, h);
-        g.fillStyle = '#e8c8a8';
-        g.beginPath();
-        g.ellipse(w / 2, h / 2, h * 0.22, h * 0.3, 0, 0, Math.PI * 2);
-        g.fill();
         const jaw = weights52[24] ?? 0; // jawOpen
-        g.fillStyle = '#5a3a32';
-        g.beginPath();
-        g.ellipse(w / 2, h / 2 + h * 0.12, h * 0.07 * (1 + jaw * 1.4), h * 0.03 + h * 0.05 * jaw, 0, 0, Math.PI * 2);
-        g.fill();
         const b = weights52[9] ?? 0; // eyeBlinkRight-ish column
-        g.fillStyle = '#222';
-        const eyeY = h / 2 - h * 0.06;
-        g.fillRect(w / 2 - h * 0.13, eyeY - h * 0.012 * (1 - b), h * 0.07, h * 0.024 * (1 - b) + 1);
-        g.fillRect(w / 2 + h * 0.06, eyeY - h * 0.012 * (1 - b), h * 0.07, h * 0.024 * (1 - b) + 1);
+        if (this.asset && this.asset.isImage && this.asset.imageSource) {
+          const src = this.asset.imageSource;
+          const sw = src.width || src.naturalWidth || 400;
+          const sh = src.height || src.naturalHeight || 500;
+          const scale = Math.min((w * 0.65) / sw, (h * 0.78) / sh);
+          const dw = sw * scale;
+          const dh = sh * scale;
+          const dx = (w - dw) / 2;
+          const dy = (h - dh) / 2;
+          // Draw upper half and jaw-shifted lower half in 2D fallback mode.
+          const splitRatio = 0.62;
+          g.drawImage(src, 0, 0, sw, sh * splitRatio, dx, dy, dw, dh * splitRatio);
+          g.drawImage(
+            src,
+            0,
+            sh * splitRatio,
+            sw,
+            sh * (1 - splitRatio),
+            dx,
+            dy + dh * splitRatio + jaw * dh * 0.08,
+            dw,
+            dh * (1 - splitRatio)
+          );
+        } else {
+          g.fillStyle = '#e8c8a8';
+          g.beginPath();
+          g.ellipse(w / 2, h / 2, h * 0.22, h * 0.3, 0, 0, Math.PI * 2);
+          g.fill();
+          g.fillStyle = '#5a3a32';
+          g.beginPath();
+          g.ellipse(w / 2, h / 2 + h * 0.12, h * 0.07 * (1 + jaw * 1.4), h * 0.03 + h * 0.05 * jaw, 0, 0, Math.PI * 2);
+          g.fill();
+          g.fillStyle = '#222';
+          const eyeY = h / 2 - h * 0.06;
+          g.fillRect(w / 2 - h * 0.13, eyeY - h * 0.012 * (1 - b), h * 0.07, h * 0.024 * (1 - b) + 1);
+          g.fillRect(w / 2 + h * 0.06, eyeY - h * 0.012 * (1 - b), h * 0.07, h * 0.024 * (1 - b) + 1);
+        }
         g.fillStyle = '#8fa';
         g.fillRect(0, h - 6, w * Math.min(weights52[43] + weights52[44], 1), 6); // smile meter
       }

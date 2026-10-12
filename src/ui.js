@@ -18,12 +18,12 @@ export const CONFIG = {
 
 /** Cheat card (§10: 6 lines). */
 const CHEAT = [
+  'I — select image (or drop/paste photo on canvas)',
   'C — calibrate · 1..7 — emotions · 0 — reset all',
   'U — undo drag edit · R — record · M — Mirror Skin',
   'V — webcam PiP / skeleton · Shift+D — perf HUD',
   'Drag face parts to sculpt; 🔒 pins keep your edit',
-  'Wheel on the head — dolly · Esc — release drag',
-  'Emotion chips long-press = solo/lock',
+  'Wheel on head/image — dolly · Esc — release drag',
 ];
 
 /**
@@ -53,12 +53,43 @@ export class UI {
       <div id="fm-privacy" title="Video frames never leave this page">100% local</div>
       <div id="fm-topbar">
         <button id="fm-mirror" class="fm-big">Mirror (webcam) ⏻</button>
+        <button id="fm-imgbtn" class="fm-big fm-img-cta" title="Select an image to warp & animate (I)">Select Image 🖼</button>
+        <input id="fm-imgfile" type="file" accept="image/*" class="fm-hidden">
+        <button id="fm-modebtn" class="fm-chip fm-hidden" title="Switch between user-selected 2D Image and 3D Head">3D Head</button>
         <button id="fm-skin" class="fm-chip" title="Project your webcam texture onto the head (M)">Mirror Skin</button>
         <button id="fm-full" class="fm-chip" title="Fullscreen">⛶</button>
         <button id="fm-hudbtn" class="fm-chip" title="Shift+D">HUD</button>
         <span id="fm-status"></span>
       </div>
       <aside id="${CONFIG.panelId}">
+        <div class="fm-section">
+          <h3>Image Puppet (2D Warp)</h3>
+          <div class="fm-row fm-btns">
+            <button id="fm-imgpick" class="fm-chip fm-active">🖼 Choose Image…</button>
+            <button id="fm-imgsample" class="fm-chip" title="Load built-in portrait image">Sample Portrait</button>
+            <button id="fm-imgtoggle" class="fm-chip fm-hidden">3D Head</button>
+          </div>
+          <div id="fm-imgcard" class="fm-imgcard fm-hidden">
+            <img id="fm-imgthumb" alt="Selected image preview">
+            <div class="fm-imgmeta">
+              <div id="fm-imgname" class="fm-imgname"></div>
+              <div id="fm-imgbadge" class="fm-imgbadge"></div>
+              <div class="fm-row fm-btns" style="margin-top:4px;">
+                <button id="fm-imgmatch" class="fm-chip fm-chip-sm" title="Copy expression from the selected image">Match Expression</button>
+              </div>
+            </div>
+          </div>
+          <label class="fm-row"><span>Warp strength</span>
+            <input type="range" id="fm-warpscale" min="0.2" max="2.5" step="0.05" value="1"></label>
+          <label class="fm-row"><span>2.5D head tilt</span>
+            <input type="range" id="fm-imgtilt" min="0" max="1" step="0.05" value="0.4"></label>
+          <div class="fm-toggles">
+            <label class="fm-toggle" title="Show the 16 draggable sculpt handles on the photo">
+              <input type="checkbox" id="fm-imgpts" checked><span>Sculpt points</span>
+            </label>
+          </div>
+          <div class="fm-rec-hint">Select a photo, drop/paste an image on canvas, or press I.</div>
+        </div>
         <div class="fm-section">
           <h3>Emotions</h3>
           <div id="fm-chips">
@@ -207,6 +238,22 @@ export class UI {
   _wire() {
     const $ = (id) => this.root.querySelector(id);
     $('#fm-mirror').addEventListener('click', () => this.cb.onMirrorToggle?.());
+    const fileInput = /** @type {HTMLInputElement} */ ($('#fm-imgfile'));
+    const pickImage = () => fileInput?.click();
+    $('#fm-imgbtn').addEventListener('click', pickImage);
+    $('#fm-imgpick').addEventListener('click', pickImage);
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files?.[0];
+      if (file) this.cb.onImageFile?.(file);
+      fileInput.value = '';
+    });
+    $('#fm-imgsample').addEventListener('click', () => this.cb.onImageSample?.());
+    $('#fm-modebtn').addEventListener('click', () => this.cb.onImageToggleMode?.());
+    $('#fm-imgtoggle').addEventListener('click', () => this.cb.onImageToggleMode?.());
+    $('#fm-imgmatch').addEventListener('click', () => this.cb.onImageMatchExpression?.());
+    $('#fm-warpscale').addEventListener('input', (e) => this.cb.onWarpScale?.(parseFloat(e.target.value)));
+    $('#fm-imgtilt').addEventListener('input', (e) => this.cb.onImageTilt?.(parseFloat(e.target.value)));
+    $('#fm-imgpts').addEventListener('change', (e) => this.cb.onImagePointsToggle?.(e.target.checked));
     $('#fm-skin').addEventListener('click', () => this.cb.onMirrorSkin?.());
     $('#fm-full').addEventListener('click', () => this.cb.onFullscreen?.());
     $('#fm-hudbtn').addEventListener('click', () => this.cb.onHud?.());
@@ -260,13 +307,14 @@ export class UI {
     window.addEventListener('keydown', (e) => {
       if (e.target && ['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return;
       const k = e.key.toLowerCase();
-      if (k === 'c') this.cb.onCalibrate?.();
+      if (k === 'i' && !e.ctrlKey && !e.metaKey && !e.altKey) this.openImagePicker();
+      else if (k === 'c' && !e.ctrlKey && !e.metaKey) this.cb.onCalibrate?.();
       else if (k >= '1' && k <= '7') this.cb.onEmotion?.(EMOTION_ORDER[parseInt(k, 10) - 1]);
       else if (k === '0') this.cb.onReset?.();
       else if (k === 'u') this.cb.onUndo?.();
       else if (k === 'r') this.cb.onRecord?.();
       else if (k === 'm') this.cb.onMirrorSkin?.();
-      else if (k === 'v') this.cb.onPip?.();
+      else if (k === 'v' && !e.ctrlKey && !e.metaKey) this.cb.onPip?.();
       else if (k === 'd' && e.shiftKey) this.cb.onHud?.();
       else if (k === 'escape') this.cb.onEscape?.();
       else if (k === ' ') {
@@ -351,6 +399,50 @@ export class UI {
   setMirrorSkin(on) {
     const el = this.root.querySelector('#fm-skin');
     if (el) el.classList.toggle('fm-active', on);
+  }
+
+  /** Open the file dialog for selecting a user image. */
+  openImagePicker() {
+    const fileInput = /** @type {HTMLInputElement|null} */ (this.root.querySelector('#fm-imgfile'));
+    fileInput?.click();
+  }
+
+  /**
+   * Update the UI state for the user-selected 2D image puppet.
+   * @param {{active: boolean, hasImage: boolean, name?: string, badge?: string, thumbUrl?: string, canMatch?: boolean}} info
+   */
+  setImageState(info) {
+    const $ = (sel) => this.root.querySelector(sel);
+    const card = $('#fm-imgcard');
+    const thumb = /** @type {HTMLImageElement|null} */ ($('#fm-imgthumb'));
+    const nameEl = $('#fm-imgname');
+    const badgeEl = $('#fm-imgbadge');
+    const matchBtn = /** @type {HTMLButtonElement|null} */ ($('#fm-imgmatch'));
+    const modeBtn = $('#fm-modebtn');
+    const toggleBtn = $('#fm-imgtoggle');
+    const topImgBtn = $('#fm-imgbtn');
+
+    if (card) card.classList.toggle('fm-hidden', !info.hasImage);
+    if (thumb && info.thumbUrl) thumb.src = info.thumbUrl;
+    if (nameEl && info.name !== undefined) nameEl.textContent = info.name;
+    if (badgeEl && info.badge !== undefined) badgeEl.textContent = info.badge;
+    if (matchBtn) {
+      matchBtn.disabled = !info.canMatch;
+      matchBtn.style.opacity = info.canMatch ? '1' : '0.45';
+    }
+    if (modeBtn) {
+      modeBtn.classList.toggle('fm-hidden', !info.hasImage);
+      modeBtn.textContent = info.active ? 'Switch to 3D Head' : 'Switch to 2D Image';
+      modeBtn.classList.toggle('fm-active', info.active);
+    }
+    if (toggleBtn) {
+      toggleBtn.classList.toggle('fm-hidden', !info.hasImage);
+      toggleBtn.textContent = info.active ? '3D Head' : '2D Image';
+      toggleBtn.classList.toggle('fm-active', !info.active);
+    }
+    if (topImgBtn) {
+      topImgBtn.classList.toggle('fm-active-big', info.active);
+    }
   }
 
   /** @param {boolean} on */
