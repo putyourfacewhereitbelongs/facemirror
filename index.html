@@ -1,10 +1,25 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#090b14" />
-    <title>FaceMirror Studio</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0b0d12">
+    <title>FaceMirror-3D — realistic webcam-driven 3D face avatar</title>
+    <link rel="stylesheet" href="./styles.css">
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "./vendor/three.module.js",
+          "three/addons/": "./vendor/examples/jsm/"
+        }
+      }
+    </script>
   </head>
-  <body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body>
+  <body>
+    <div id="app">
+      <!-- ui.js mounts the canvas, panel, wizard, PiP and HUD here -->
+    </div>
+    <noscript>FaceMirror-3D needs JavaScript + a webcam (or manual mode).</noscript>
+    <script type="module" src="./src/main.js"></script>
+  </body>
 </html>
