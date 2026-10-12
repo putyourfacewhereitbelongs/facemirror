@@ -77,6 +77,15 @@ html, body {
   cursor: pointer;
 }
 .fm-big:hover { border-color: var(--accent); }
+.fm-big.fm-img-cta {
+  background: linear-gradient(180deg, #2b2742, #1b182c);
+  border-color: rgba(247, 178, 103, 0.45);
+}
+.fm-big.fm-img-cta:hover { border-color: var(--accent-2); }
+.fm-big.fm-active-big {
+  border-color: var(--accent);
+  box-shadow: 0 0 14px rgba(102, 224, 176, 0.25);
+}
 
 .fm-chip {
   padding: 8px 14px;
@@ -91,6 +100,48 @@ html, body {
   background: rgba(102, 224, 176, 0.18);
   border-color: var(--accent);
   color: var(--accent);
+}
+.fm-chip-sm {
+  padding: 4px 10px;
+  font-size: 0.74rem;
+}
+
+/* ---- image preview card ---- */
+.fm-imgcard {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(11, 13, 18, 0.55);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  margin: 8px 0;
+}
+#fm-imgthumb {
+  width: 56px;
+  height: 68px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #0b0d12;
+  flex-shrink: 0;
+}
+.fm-imgmeta {
+  flex: 1;
+  min-width: 0;
+}
+.fm-imgname {
+  font-size: 0.80rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fm-imgbadge {
+  font-size: 0.72rem;
+  color: var(--accent);
+  margin-top: 2px;
 }
 
 #fm-status { color: var(--muted); font-size: 0.85rem; }
