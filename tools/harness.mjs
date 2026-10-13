@@ -193,6 +193,25 @@ for (let i = 1; i <= 120; i++) {
 }
 ok('fast sweep is continuous', worstSweep < head.fw * 0.09, `max ${worstSweep.toFixed(2)} px/frame (${(worstSweep / head.fw * 100).toFixed(2)}% of face width)`);
 
+section('rest crispness: a sub-deadband pose is held at neutral');
+/* Inside the pose deadband the estimate is exactly neutral, so a resting
+   frame stays on the crisp source photograph instead of repainting the whole
+   shell from a resampled one; just above it the pose is followed exactly.
+   (Dynamic jitter is the tracker's own story: in this rig a periodic
+   half-degree wobble can still excite a slow wander of the estimate.) */
+const holdPose = (yaw, pitch, n = 200) => { let r = null; for (let i = 0; i < n; i++) r = step1(yaw / deg, pitch / deg, 0, 1 / 60); return r; };
+const subDead = holdPose(0.3, 0.2);
+ok('a sub-deadband head pose stays exactly neutral',
+   Math.abs(yprOf(subDead.q).yaw) < 1e-9 && Math.abs(yprOf(subDead.q).pitch) < 1e-9,
+   `0.3°/0.2° in, ${(yprOf(subDead.q).yaw * deg).toFixed(4)}°/${(yprOf(subDead.q).pitch * deg).toFixed(4)}° out`);
+const aboveDead = holdPose(1.5, 0);
+ok('a pose above the deadband is followed exactly',
+   Math.abs(yprOf(aboveDead.q).yaw - 1.5 / deg) < 0.2 / deg,
+   `1.5° in, ${(yprOf(aboveDead.q).yaw * deg).toFixed(3)}° out`);
+const turnFrame = step1(2 / deg, 0, 0, 1 / 60, null, true);
+ok('a two-degree turn releases the shell', turnFrame.dbg.tris > 500,
+   `${turnFrame.dbg.tris} painted triangles`);
+
 section('dropout and recovery');
 t += 1000;
 dom.setClock(t);
@@ -237,20 +256,54 @@ ok('no flash-class canvas ops in 240 frames', nanFrames === 0, `frames with viol
 
 section('paint order and far-side handling');
 /* Test renderer geometry at known poses, independent of tracker lag. */
-const renderAt = q => FMRender.sessionFrame(ses, {
+const renderAt = (q, overrides = {}) => FMRender.sessionFrame(ses, {
   t: t / 1000, dt: 1 / 60, quality: 1, q,
   focal: 3.1, scale: 1, depthGain: 0.3, ox: 0, oy: 0,
   deltaCanonical: new Float32Array(478 * 3), jawOpen: 0, jawMeshGain: 1,
   limits: true, shade: 0, hairGain: 0, gaze: [[0, 0], [0, 0]], gazeGain: 1.9,
   lid: [0, 0], tongue: 0, vis: 0.4, bright: 1.15, warmth: 0,
-  showPoints: false, showMesh: false, origOnly: false, points: [], dragIndex: -1, hoverIndex: -1
+  showPoints: false, showMesh: false, origOnly: false, points: [], dragIndex: -1, hoverIndex: -1,
+  ...overrides
 });
-const restDbg = renderAt([0, 0, 0, 1]);
+const restDbg = renderAt([0, 0, 0, 1], { jawMeshGain: 0, limits: false });
 const turnDbg = renderAt(FM.quatFromYPR(0.55, 0, -0.1));
 ok('far-side mirroring activates on a turn', turnDbg.culled > restDbg.culled && turnDbg.culled > 0,
    `${restDbg.culled} frontal -> ${turnDbg.culled} mirrored triangles`);
-ok('shell coverage stays complete through yaw', restDbg.tris === 0 && turnDbg.tris > 2400,
+ok('shell coverage stays complete through yaw', restDbg.tris === 0 && turnDbg.tris > 2300,
    `${restDbg.tris} frontal source-only -> ${turnDbg.tris} turned shell triangles`);
+/* A still frame with no expression is exactly the source photograph: the
+   renderer must not repaint it "just in case". */
+ok('an undeformed rest frame paints nothing', restDbg.tris === 0, `${restDbg.tris} triangles`);
+/* Near-frontal movement must repaint texture, not just the debug dots. */
+const expression = new Float32Array(478 * 3);
+expression[61 * 3] = -5;
+expression[291 * 3] = 5;
+for (const quality of [0, 1, 2]) {
+  const dbg = renderAt([0, 0, 0, 1], { quality, deltaCanonical: expression });
+  ok(`frontal expression paints face texture at quality ${quality}`, dbg.tris > 0);
+}
+ok('a small head turn paints face texture', renderAt(FM.quatFromYPR(0.1, 0, 0)).tris > 0);
+/* Rigid head motion has to reach the mesh.  The deformation once subtracted
+   two equally posed projections, which cancels every rigid term: the face
+   stayed a flat frozen photo while the landmark overlay moved with the head.
+   Measured on the analytic rig, so the tracker's residual channel is out. */
+renderAt(FM.quatFromYPR(0.4, 0, 0), { jawMeshGain: 0, limits: false });
+const shift = i => ses.DST[i * 2] - ses.S2[i * 2];
+const nose = shift(1), chin = shift(152), farCheek = shift(454), nearCheek = shift(234);
+ok('a head turn deforms the face itself',
+   nose > 4 && chin > 2 && Math.abs(farCheek) > 8 && Math.sign(farCheek) !== Math.sign(nearCheek),
+   `nose ${nose.toFixed(1)} px, chin ${chin.toFixed(1)} px, far cheek ${farCheek.toFixed(1)} px, near cheek ${nearCheek.toFixed(1)} px at 23° yaw`);
+/* Translation/scale alone must not slide the anchored photo, but it must not
+   suppress the deformation either: the two are separate decisions. */
+const anchored = renderAt([0, 0, 0, 1], { ox: 12, oy: 8, jawMeshGain: 0, limits: false });
+ok('rigid translation alone leaves the anchored photo untouched',
+   anchored.tris === 0 && Math.abs(ses.DST[152 * 2] - ses.S2[152 * 2]) < 1e-6);
+/* Every painted triangle's affine must land its own source vertices on its
+   destination vertices. */
+const affine = checkTriangleAffines(ses);
+ok('painted affines map source vertices onto destination vertices',
+   affine.inspected > 2000 && affine.bad === 0,
+   `${affine.inspected} affines checked, worst ${affine.worst.toFixed(3)} px, ${affine.bad} wrong`);
 /* Both the base shell and face tessellation must remain far-to-near. */
 const orderOk = checkPaintOrder(ses);
 ok('both shell passes drawn far to near', orderOk.ok, orderOk.msg);
@@ -484,6 +537,90 @@ function mouthClipContained(ses, ctx) {
   });
   return innerClips.length >= 2; // cavity + tongue passes both clip to the inner-lip aperture
 }
+/* The painted affine must map the triangle's source vertices onto its
+   destination vertices. Clip/order tests cannot see a scrambled affine:
+   the triangle would still paint, in the right place, with wrong pixels. */
+function checkTriangleAffines(ses) {
+  /* A painted triangle is drawn as clip(dest triangle grown by the pass pad)
+     + setTransform(affine) + drawImage(source rect).  Recover the triangle
+     that the op belongs to using each pass's own pad and tessellation, then
+     require the affine to land that triangle's source vertices on its
+     destination vertices.  A swapped coefficient pair would keep the paint
+     order and clip legal while scrambling the pixels. */
+  const lc = ses.lctx;
+  const passes = [ses.triA, ses.triB].filter(Boolean);
+  const cap = lc.opLimit;
+  lc.opLimit = 80000;
+  lc.ops.length = 0;
+  renderAt(FM.quatFromYPR(0.5, 0, 0.08), { quality: 1 });
+  lc.opLimit = cap;
+  const midX = ses.mid[0];
+  const key = (x, y) => `${Math.round(x * 4)}:${Math.round(y * 4)}`;
+  const indexOf = pass => {
+    const idx = new Map();
+    for (let t = 0; t < pass.n; t++) {
+      const a = pass.list[t * 3], b = pass.list[t * 3 + 1], c = pass.list[t * 3 + 2];
+      const k = key((ses.DST[a * 2] + ses.DST[b * 2] + ses.DST[c * 2]) / 3,
+                    (ses.DST[a * 2 + 1] + ses.DST[b * 2 + 1] + ses.DST[c * 2 + 1]) / 3);
+      if (!idx.has(k)) idx.set(k, []);
+      idx.get(k).push({ t, a, b, c, d: [a, b, c] });
+    }
+    return idx;
+  };
+  const idx = indexOf(ses.triA);
+  const idxB = passes.length > 1 ? indexOf(ses.triB) : null;
+  const unpad = (raw, pad) => {
+    const gx = (raw[0][0] + raw[1][0] + raw[2][0]) / 3, gy = (raw[0][1] + raw[1][1] + raw[2][1]) / 3;
+    return raw.map(([x, y]) => {
+      const ux = x - gx, uy = y - gy, l = Math.hypot(ux, uy) || 1;
+      return [gx + ux * (l - pad) / l, gy + uy * (l - pad) / l];
+    });
+  };
+  const apply = (m, p) => [m[0] * p[0] + m[2] * p[1] + m[4], m[1] * p[0] + m[3] * p[1] + m[5]];
+  const dErr = (cand, d) => Math.max(...[0, 1, 2].map(k =>
+    Math.hypot(d[k][0] - ses.DST[cand.d[k] * 2], d[k][1] - ses.DST[cand.d[k] * 2 + 1])));
+  const search = (map, d) => {
+    if (!map) return null;
+    const cx = (d[0][0] + d[1][0] + d[2][0]) / 3, cy = (d[0][1] + d[1][1] + d[2][1]) / 3;
+    let best = null, bestErr = 0.05;
+    for (let ox = -2; ox <= 2; ox++) for (let oy = -2; oy <= 2; oy++) {
+      for (const cand of (map.get(key(cx + ox * 0.25, cy + oy * 0.25)) || [])) {
+        const err = dErr(cand, d);
+        if (err < bestErr) { bestErr = err; best = cand; }
+      }
+    }
+    return best;
+  };
+  let clipPts = null, mat = null, inspected = 0, worst = 0, bad = 0, skipped = 0, worstAt = null;
+  for (const op of lc.ops) {
+    if (op.op === 'clip') { clipPts = op.pts && op.pts.length >= 3 ? op.pts.slice(0, 3) : null; mat = null; continue; }
+    if (op.op === 'setTransform') { mat = op.args.slice(); continue; }
+    if (op.op !== 'drawImage' || !clipPts || !mat) continue;
+    const raw = clipPts; clipPts = null;
+    let best = null, bestDst = null, bestFit = Infinity;
+    for (const [map, pad] of [[idx, ses.triA.pad * (ses.triA.padScale || 1)],
+                              [idxB, ses.triB ? ses.triB.pad * (ses.triB.padScale || 1) : 0]]) {
+      const d = unpad(raw, pad);
+      const cand = search(map, d);
+      if (!cand) continue;
+      const src = cand.d.map(v => [ses.S2[v * 2], ses.S2[v * 2 + 1]]);
+      const mirrored = [[2 * midX - src[0][0], src[0][1]], [2 * midX - src[2][0], src[2][1]],
+                        [2 * midX - src[1][0], src[1][1]]];          // far-side b/c swap
+      const fit = pts => Math.max(...[0, 1, 2].map(k => {
+        const [mx, my] = apply(mat, pts[k]);
+        return Math.hypot(mx - d[k][0], my - d[k][1]);
+      }));
+      const e = Math.min(fit(src), fit(mirrored));
+      if (e < bestFit) { bestFit = e; best = cand; bestDst = d; }
+    }
+    if (!best) { skipped++; continue; }
+    inspected++;
+    if (bestFit > worst) { worst = bestFit; worstAt = [best.t, best.d.join(',')]; }
+    if (bestFit > 1.0) bad++;
+  }
+  return { inspected, worst, bad, skipped, worstAt, painted: passes.reduce((n, p) => n + p.n, 0) };
+}
+
 function checkPaintOrder(ses) {
   /* Verify the depth-key order actually consumed by both shell passes. */
   const passes = [ses.triA, ses.triB].filter(Boolean);

@@ -585,9 +585,17 @@
     const yaw = softLimit(e.yaw * gY * rad, limY * rad) / rad;
     const pitch = softLimit(e.pitch * gP * rad, limP * rad) / rad;
     const roll = softLimit(e.roll * gR * rad, limR * rad) / rad;
-    S.ypr.yaw = oneEuroRun(S.yprF.yaw, yaw, t);
-    S.ypr.pitch = oneEuroRun(S.yprF.pitch, pitch, t);
-    S.ypr.roll = oneEuroRun(S.yprF.roll, roll, t);
+    /* Pose deadband, the rigid counterpart of the residual deadband above.
+       A hand-still head still reports a few thousandths of a radian, and a
+       renderer that follows it has to repaint the whole shell from a
+       resampled photo.  Inside the band the pose is exactly neutral, so a
+       resting frame stays on the crisp source photograph; real motion above
+       it is followed normally.                                            */
+    const poseDead = (c.poseDead === undefined ? 0.5 : c.poseDead) / rad;
+    const deadband = v => Math.abs(v) < poseDead ? 0 : v;
+    S.ypr.yaw = oneEuroRun(S.yprF.yaw, deadband(yaw), t);
+    S.ypr.pitch = oneEuroRun(S.yprF.pitch, deadband(pitch), t);
+    S.ypr.roll = oneEuroRun(S.yprF.roll, deadband(roll), t);
     S.qTarget = quatFromYPR(S.ypr.yaw, S.ypr.pitch, S.ypr.roll);
     /* slew-limited slerp: bounds angular acceleration as well as speed */
     S.q = quatSlew(S.q, quatFollow(S.q, S.qTarget, dt, c.poseRate || 26), dt, (c.poseSpeed || 5.4));

@@ -586,19 +586,20 @@
     return bi;
   }
   /* screen px -> canonical px.  Solves the *actual* mapping the renderer
-     uses,  dst = S2 + w·(proj(base + delta) − proj(base)),  with a numerical
-     Jacobian — so the dot lands under the pointer even while the head is
-     turned, the face is scaled and an expression is running.            */
+     uses,  dst = S2 + w·(projPose(base + delta) − neutralProj(base)),  with a
+     numerical Jacobian — so the dot lands under the pointer even while the
+     head is turned, the face is scaled and an expression is running.    */
   function screenToCanonical(i, target) {
     const S = A.ses, head = A.head;
-    if (!S || !S.proj || !head) return [0, 0, 0];
+    if (!S || !S.projPose || !head) return [0, 0, 0];
     const w = A.mesh ? A.mesh.w[i] : 1;
     const base = head.P[i];
-    const p0 = S.proj(base);
+    const zc = S.zc || 0;
+    const p0 = S.neutralProj([base[0], base[1], base[2] * (1 + zc)]);
     const sx = S.S2[i * 2], sy = S.S2[i * 2 + 1];
     const ex = A.deltaExpr[i * 3], ey = A.deltaExpr[i * 3 + 1];
     const at = (x, y) => {
-      const p = S.proj([base[0] + ex + x, base[1] + ey + y, base[2]]);
+      const p = S.projPose([base[0] + ex + x, base[1] + ey + y, base[2] * (1 + zc)]);
       return [sx + (p[0] - p0[0]) * w, sy + (p[1] - p0[1]) * w];
     };
     let x = A.sculpt[i * 2], y = A.sculpt[i * 2 + 1];
