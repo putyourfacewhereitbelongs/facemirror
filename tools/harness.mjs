@@ -428,8 +428,14 @@ const gazeCase = (preset, axis) => {
   const sculpted = step1(0, 0, 0, 1 / 60, null, true).dbg.lid;
   ok('a sculpted wink closes the painted lid', sculpted[0] > 0.3 && sculpted[1] < 0.15,
      `lids ${sculpted.map(v => v.toFixed(2)).join(' / ')} with camera off`);
+  /* The rack's Wink is a latch (the button toggles it), so release it by
+     hand here: every later test would otherwise run with one eye already
+     shut and its painted results would mean nothing. */
+  app.winkOn = false;
   app.sculpt.fill(0); app.outBuf.fill(0);
   for (let i = 0; i < 40; i++) step1(0, 0, 0, 1 / 60);
+  ok('the wink latch releases', app.winkOn === false && step1(0, 0, 0, 1 / 60, null, true).dbg.lid[0] < 0.25,
+     `winkOn ${app.winkOn}`);
 }
 /* Webcam path: blendshapes are the only thing that opens the mouth live. */
 {
@@ -543,6 +549,65 @@ ok('teeth/tongue outputs stay finite', [tongueFrame.dbg.mouth.h, tongueFrame.dbg
      peak > 0.45 && sum / n > 0.12 && seen / n > 0.5 && shut > 8,
      `peak ${peak.toFixed(2)}, mean ${(sum / n).toFixed(2)}, teeth in view ${(100 * seen / n).toFixed(0)}% of frames, ` +
      `closed on ${shut} frames`);
+
+  /* Opening the mouth must move the jaw and nothing else.  A flat fallback
+     weight of 0.15 on the whole mesh used to drag the eyes, brows, nose and
+     forehead down with every syllable. */
+  {
+    T.preset('Neutral');
+    for (let i = 0; i < 60; i++) stepOff();
+    const shut = Float32Array.from(ses.DST);
+    const realTalk = FMEngine.talkAt;
+    FMEngine.talkAt = () => ({ j: 1 });
+    T.preset('Talking');
+    for (let i = 0; i < 60; i++) stepOff();
+    const open = Float32Array.from(ses.DST);
+    const mOpen = ses.lastDebug.mouth;
+    FMEngine.talkAt = realTalk;
+    const dy = i => open[i * 2 + 1] - shut[i * 2 + 1];
+    const upperFace = [10, 105, 334, 151, 4, 168, 159, 386, 133, 263, 33, 362].map(dy);
+    const worst = Math.max(...upperFace.map(Math.abs));
+    ok('opening the mouth leaves the eyes and forehead alone', worst < 1.5 && mOpen.h > 0.4,
+       `worst upper-face move ${worst.toFixed(2)} px (eyes, brows, nose, lid corners) at envelope ${mOpen.h.toFixed(2)}`);
+    /* The mandible is one rigid block: the lower lip and the chin drop
+       together, the upper lip stays. */
+    const lipLo = dy(14), chin = dy(152), lipUp = dy(13);
+    ok('the lower lip and chin drop together, the upper lip stays',
+       lipLo > 6 && chin > 6 && Math.abs(lipLo - chin) < 3 && Math.abs(lipUp) < 3,
+       `lower lip ${lipLo.toFixed(1)} px, chin ${chin.toFixed(1)} px, upper lip ${lipUp.toFixed(1)} px`);
+    /* And the arches part rather than slide: the upper stays with the
+       maxilla, the lower rides down with the mandible. */
+    const cu = mOpen.boxUp, cl = mOpen.boxLo;
+    const mid = b => (b ? (b.y0 + b.y1) / 2 : null);
+    FMEngine.talkAt = () => ({ j: 0.5 });
+    for (let i = 0; i < 60; i++) stepOff();
+    const half = ses.lastDebug.mouth;
+    FMEngine.talkAt = realTalk;
+    for (let i = 0; i < 60; i++) stepOff();
+    const hu = mid(half.boxUp), hl = mid(half.boxLo);
+    ok('the teeth part with the jaw instead of sliding down together',
+       !!cu && !!cl && !!half.boxUp && !!half.boxLo &&
+       Math.abs(mid(cu) - hu) < 3 && (mid(cl) - hl) > 3,
+       `upper arch moved ${(mid(cu) - hu).toFixed(1)} px, lower arch ${(mid(cl) - hl).toFixed(1)} px between half and full open`);
+  }
+
+  /* A smile squints the aperture by itself; the painted lid must not follow
+     it shut, and a latched wink must stay one-eyed while it happens. */
+  {
+    T.preset('Big smile');
+    for (let i = 0; i < 90; i++) stepOff();
+    const smile = stepOff().dbg.lid;
+    app.winkOn = true;                           // the rack's Wink latch
+    for (let i = 0; i < 90; i++) stepOff();
+    const winked = stepOff().dbg.lid;
+    app.winkOn = false;
+    T.preset('Neutral');
+    for (let i = 0; i < 60; i++) stepOff();
+    ok('a smile does not shut the eyes', smile[0] < 0.35 && smile[1] < 0.35,
+       `lids ${smile.map(v => v.toFixed(2)).join(' / ')}`);
+    ok('a wink stays one-eyed while smiling', winked[0] > 0.8 && winked[1] < 0.25,
+       `lids ${winked.map(v => v.toFixed(2)).join(' / ')}`);
+  }
 
   /* Speech speed: a jaw step has to arrive inside a syllable.  At the old
      3.2/s the jaw needed over a second and every syllable was smeared. */

@@ -224,7 +224,6 @@
     S.triA = mkPass(spec.mesh.base, S.normals, { pad: 0.35, cull: -0.02, mirror: true });
     S.triB = mkPass(spec.mesh.face, S.normalsFace, { pad: 0.28, cull: -0.05, mirror: true });
     S.mid = spec.head.mid.slice();
-    S.axis = E.tmjAxis(spec.head);
     S.arches = buildArches();
     prepIris(S);
     buildPlate(S);
@@ -259,11 +258,9 @@
        follow one, so the talking preset only ever wobbled the jaw. */
     S.jaw = FM.slew(S.jaw, want, st.dt || 1 / 60, 14, 10);
     if (jawGain > 0.01) {
-      /* Canvas y grows downward.  With the TMJ axis used here, a positive
-         mouth-open amount needs the negative right-hand rotation; the old
-         sign lifted the lower lip into the upper lip, so webcam jawOpen and
-         speaking presets appeared to keep the mouth closed. */
-      E.applyJaw(head, C, -S.jaw * jawGain, S.axis);
+      /* A positive amount opens the mouth: the mandible field moves the
+         jaw's points downward (canonical y grows toward the chin). */
+      E.applyJaw(head, C, S.jaw * jawGain);
     }
     /* hair spring: chases the head, lags, capped */
     const H = S.hair;
@@ -558,8 +555,13 @@
          eyelid: skip the geometric read unless the eye is still roughly the
          width it has in the photo. */
       if (E.eyeWidth(D, which) < E.eyeWidth(S.S2pts, which) * 0.7) continue;
+      /* A cheek-raised smile squints the aperture ~45 % by itself, and the
+         old (closed - 0.15)/0.5 mapped that to a 0.6+ painted lid — which
+         then cleared the guard below and shut *both* eyes.  Only a real,
+         near-complete closure now reads as a nearly shut lid. */
       const closed = (rest - E.eyeOpeningRatio(D, which)) / rest;
-      k[e] = clamp01((closed - 0.15) / 0.5);
+      const raw = clamp01((closed - 0.18) / 0.80);
+      k[e] = raw * raw * (3 - 2 * raw) * 0.85;
     }
     return [k[0] - k[1] > 0.15 || k[0] > 0.6 ? k[0] : 0,
             k[1] - k[0] > 0.15 || k[1] > 0.6 ? k[1] : 0];
@@ -1163,11 +1165,11 @@
       const openAmt = clamp01(h * 1.1);
       const lower = drawArch(S, ctx, fr, D, 'lo', openAmt, st);
       oral.lowerTeeth = lower.drawnTeeth; oral.lowerAlpha = lower.alphaSum; oral.teethBox = lower.box || null;
-      oral.teethArea = lower.boxArea; oral.loBite = lower.line;
+      oral.boxLo = lower.box || null; oral.teethArea = lower.boxArea; oral.loBite = lower.line;
       oral.tongue = drawTongue(S, ctx, fr, D, { tongue: st.tongue, gap: gap + mw * 0.035 }, h) === true;
       const upper = drawArch(S, ctx, fr, D, 'up', openAmt, st);
       oral.upperTeeth = upper.drawnTeeth; oral.upperAlpha = upper.alphaSum;
-      oral.teethArea += upper.boxArea; oral.upBite = upper.line;
+      oral.teethArea += upper.boxArea; oral.upBite = upper.line; oral.boxUp = upper.box || null;
       oral.frame = lower.inner ? { upY: fr.upY, loY: fr.loY, lineLo: lower.line, lineUp: upper.line,
                                    innerY0: lower.inner.y0, innerY1: lower.inner.y1 } : null;
       if (upper.box) oral.teethBox = oral.teethBox

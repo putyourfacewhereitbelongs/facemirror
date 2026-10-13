@@ -455,41 +455,61 @@
      The jaw, lower teeth, tongue and chin share one bone, so an open
      mouth never looks like a vertical smear.
      =================================================================== */
-  function tmjAxis(head) {
-    /* hinge roughly 6% of face width above the mouth, passing through the
-       ear canal line — the classic TMJ approximation                     */
-    const a = head.P[234], b = head.P[454];
-    const y = (head.P[13][1] + head.P[14][1]) / 2 - head.fh * 0.10;
-    const zc = (head.P[234][2] + head.P[454][2]) / 2 - head.fw * 0.18;
-    return { p: [(a[0] + b[0]) / 2, y, zc], dir: v3.norm([b[0] - a[0], (b[1] - a[1]) * 0.35, (b[2] - a[2]) * 0.9]) };
-  }
+  /* The mandible landmarks the model names explicitly: the lips and the jaw
+     line.  They move as one block with the jaw, whatever their depth. */
+  const JAW_LINE = [152, 148, 176, 149, 150, 136, 377, 400, 378, 379, 365, 397, 288, 361, 323, 454,
+                    17, 0, 18, 200, 199, 175];
+  const JAW_BLOCK = new Set([...JAW_LINE, ...LIPS_I, ...LIPS_O, ...UP_LIP, ...LO_LIP]);
   const jawWeight = (i, head) => {
     if (i >= 468) return 0;
     const upper = UP_LIP.includes(i), lower = LO_LIP.includes(i);
     if (upper || lower || LIPS_O.includes(i) || LIPS_I.includes(i)) {
-      if (upper && lower) return 0.42;               // mouth corners bridge both lips
+      if (upper && lower) return 0.30;               // mouth corners bridge both lips
       if (upper) return 0.06;                        // maxilla / upper lip stays nearly rigid
       if (lower) return 0.94;                        // lower lip follows the mandible
       const midY = (head.P[13][1] + head.P[14][1]) * 0.5;
-      return clamp(0.5 + (head.P[i][1] - midY) / (head.fh * 0.02) * 0.45, 0.05, 0.95);
+      return clamp(0.30 + (head.P[i][1] - midY) / (head.fh * 0.02) * 0.45, 0.05, 0.95);
     }
-    if (i === 152 || i === 148 || i === 176 || i === 149 || i === 150 || i === 136 || i === 377 || i === 400 ||
-        i === 378 || i === 379 || i === 365 || i === 397 || i === 288 || i === 361 || i === 323 || i === 454 ||
-        i === 17 || i === 0 || i === 18 || i === 200 || i === 199 || i === 175) return 1;
-    return 0.15;
+    if (JAW_LINE.includes(i)) return 1;
+    /* Everything else follows the mandible only *below* the mouth: a flat
+       0.15 on the rest of the mesh dragged the eyes, brows, nose and
+       forehead down with every syllable.  Zero at the mouth line, smoothstep
+       to the chin, so the jaw moves the jaw. */
+    const mouthY = (head.P[13][1] + head.P[14][1]) * 0.5;
+    const t = clamp01((head.P[i][1] - (mouthY - head.fh * 0.03)) / (head.fh * 0.22));
+    return t * t * (3 - 2 * t);
   };
-  function applyJaw(head, pts, angle, axis) {
+  /* Mandible motion.  Rotating rigidly about the TMJ hinge does not survive
+     this mesh's depth model: the chin sits close to the hinge's depth plane,
+     so a 28 deg turn swung the chin *up and back* while the lower lip went
+     down — the lower face visibly contradicted itself, and it takes the
+     mandible's depth with it.  The mandible is driven as the hinge's
+     first-order field instead: every mandible point moves down (and a little
+     back) by an amount that grows from the mouth line to the chin, so the
+     lips, the corners, the jaw line and the chin all agree.  `angle` is the
+     same signed mouth-open amount applyJaw always took. */
+  function applyJaw(head, pts, angle) {
     if (Math.abs(angle) < 1e-4) return;
-    const R = m3.fromAxisAngle(axis.dir, angle);
+    const mouthY = (head.P[13][1] + head.P[14][1]) * 0.5;
+    /* A full open drops the chin by 7 % of the face height and parts the
+       lips by roughly a third of the mouth width. */
+    const drop = head.fh * 0.062 * (angle / 0.5);
     for (let i = 0; i < 478; i++) {
       const w = jawWeight(i, head);
       if (w <= 0) continue;
-      const rel = v3.sub(head.P[i], axis.p);
-      const rot = m3.mv(R, rel);
+      /* The lips, the corners and the jaw line move as the mandible block;
+         the rest of the face follows a falloff that is zero at the mouth
+         line and reaches the chin, so the jaw line near the ear (the hinge)
+         stays put while the chin drops. */
+      let g = 1;
+      if (!JAW_BLOCK.has(i)) {
+        const d = clamp01((head.P[i][1] - mouthY) / (head.fh * 0.22));
+        g = d * d * (3 - 2 * d);
+      }
+      const dy = drop * g * w;
       const p = pts[i];
-      p[0] += (axis.p[0] + rot[0] - head.P[i][0]) * w;
-      p[1] += (axis.p[1] + rot[1] - head.P[i][1]) * w;
-      p[2] += (axis.p[2] + rot[2] - head.P[i][2]) * w;
+      p[1] += dy;
+      p[2] -= dy * 0.22;                    // the mandible also moves back
     }
   }
 
@@ -758,7 +778,7 @@
     OVAL, CONTOUR, LEYE, REYE, LBROW, RBROW, LIPS_O, LIPS_I, NOSE, UP_LIP, LO_LIP, LIDS, IRIS, EYE_RING,
     RIGID, RIGID_W, EXPR_GAIN, EXPR_CAP, ACTIONS,
     /* geometry */
-    buildCanonical, buildMesh, faceCenterOf, localUV, tmjAxis, jawWeight, applyJaw,
+    buildCanonical, buildMesh, faceCenterOf, localUV, jawWeight, applyJaw,
     /* expression */
     zeroActions, PRESETS, talkAt, expressionDelta, mouthState, makeTransfer, retargetResidual, residualEnergy,
     /* tracking */
