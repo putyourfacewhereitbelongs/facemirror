@@ -293,11 +293,17 @@ const nose = shift(1), chin = shift(152), farCheek = shift(454), nearCheek = shi
 ok('a head turn deforms the face itself',
    nose > 4 && chin > 2 && Math.abs(farCheek) > 8 && Math.sign(farCheek) !== Math.sign(nearCheek),
    `nose ${nose.toFixed(1)} px, chin ${chin.toFixed(1)} px, far cheek ${farCheek.toFixed(1)} px, near cheek ${nearCheek.toFixed(1)} px at 23° yaw`);
-/* Translation/scale alone must not slide the anchored photo, but it must not
-   suppress the deformation either: the two are separate decisions. */
-const anchored = renderAt([0, 0, 0, 1], { ox: 12, oy: 8, jawMeshGain: 0, limits: false });
-ok('rigid translation alone leaves the anchored photo untouched',
-   anchored.tris === 0 && Math.abs(ses.DST[152 * 2] - ses.S2[152 * 2]) < 1e-6);
+/* Tracked translation/dolly is the head's bulk motion: while the pose sits
+   in its deadband (panWeight 0) it must not touch the photo at all, and once
+   the head is really moving (panWeight 1) the shell has to follow it. */
+const settled = renderAt([0, 0, 0, 1], { ox: 12, oy: 8, panWeight: 0, jawMeshGain: 0, limits: false });
+ok('a resting head ignores tracker translation',
+   settled.tris === 0 && Math.abs(ses.DST[152 * 2] - ses.S2[152 * 2]) < 1e-6,
+   `${settled.tris} triangles, chin offset ${(ses.DST[152 * 2] - ses.S2[152 * 2]).toFixed(3)} px`);
+const gliding = renderAt([0, 0, 0, 1], { ox: 12, oy: 8, panWeight: 1, jawMeshGain: 0, limits: false });
+ok('turning head glides with tracker translation',
+   Math.abs(ses.DST[152 * 2] - ses.S2[152 * 2] - 12) < 0.01 && Math.abs(ses.DST[152 * 2 + 1] - ses.S2[152 * 2 + 1] - 8) < 0.01,
+   `chin offset ${(ses.DST[152 * 2] - ses.S2[152 * 2]).toFixed(2)}, ${(ses.DST[152 * 2 + 1] - ses.S2[152 * 2 + 1]).toFixed(2)} px`);
 /* Every painted triangle's affine must land its own source vertices on its
    destination vertices. */
 const affine = checkTriangleAffines(ses);
@@ -317,6 +323,141 @@ const forcedFallbacks = sortPasses.reduce((n, pass, i) => n + (pass.mergeFallbac
 const mergedOrder = checkPaintOrder(ses);
 ok('stable merge fallback repairs adversarial prior order', forcedFallbacks === sortPasses.length && mergedOrder.ok,
    `${forcedFallbacks}/${sortPasses.length} passes fell back; ${mergedOrder.msg}`);
+
+section('expressions, eyelids and painted features');
+/* The idle blink adds its own symmetric blinks; turn it off so a wink can be
+   measured on its own, then back on so the blink itself is covered below. */
+dom.byId.get('ab').checked = false;
+const idleCase = (() => {
+  /* Idle blinks belong to an untracked puppet: drop the camera feed (trust
+     decays) and watch the lids for a few seconds. */
+  dom.byId.get('ab').checked = true;
+  T.preset('Neutral');
+  const wasCam = T.state().camOn;
+  T.state().camOn = false;
+  for (let i = 0; i < 120; i++) { t += 1000 / 60; dom.setClock(t); T.frame(t, 1 / 60, true); }
+  let blink = 0, sawOpen = 0, frames = 0;
+  for (let i = 0; i < 900; i++) {
+    t += 1000 / 60; dom.setClock(t);
+    const f = T.frame(t, 1 / 60, true);
+    blink = Math.max(blink, f.dbg.lid[0]);
+    if (f.dbg.lid[0] < 0.2) sawOpen++;
+    frames++;
+  }
+  T.state().camOn = wasCam;
+  dom.byId.get('ab').checked = false;
+  return { blink, sawOpen, frames };
+})();
+ok('an untracked puppet blinks on its own', idleCase.blink > 0.5 && idleCase.sawOpen > idleCase.frames * 0.5,
+   `peak lid ${idleCase.blink.toFixed(2)} over ${idleCase.frames} frames`);
+{
+  /* Teeth are only visible through the mouth opening.  Building the arch in
+     canonical space used to drop them ~300 px below the lips (the "floating
+     near the chin" report); the box below is what the viewer really sees. */
+  T.preset('Laugh');
+  for (let i = 0; i < 70; i++) step1(0.1, 0, 0, 1 / 60, null, true);
+  const f = step1(0.1, 0, 0, 1 / 60, null, true);
+  const box = f.dbg.mouth.teethBox;
+  const lipTop = Math.min(ses.DST[13 * 2 + 1], ses.DST[14 * 2 + 1]);
+  const chinY = ses.DST[152 * 2 + 1];
+  const mouthW = Math.hypot(ses.DST[291 * 2] - ses.DST[61 * 2], ses.DST[291 * 2 + 1] - ses.DST[61 * 2 + 1]);
+  ok('painted teeth sit on the mouth, not near the chin',
+     !!box && box.y0 > lipTop - mouthW * 0.5 && box.y1 < chinY - mouthW * 0.2 && box.y1 - box.y0 < mouthW * 0.6,
+     box ? `teeth y ${box.y0.toFixed(0)}..${box.y1.toFixed(0)} vs lips ${lipTop.toFixed(0)} and chin ${chinY.toFixed(0)} (mouth ${mouthW.toFixed(0)} px)` : 'no teeth painted');
+  T.preset('Neutral');
+  for (let i = 0; i < 50; i++) step1(0, 0, 0, 1 / 60);
+}
+const app = T.state();
+/* Gaze is one face direction: whatever the tracker adds per eye, a gaze
+   action must move both pupils the same way.  Measured as the change from
+   each eye's own Neutral reading, so the tracked component cancels. */
+dom.byId.get('ab').checked = false;   // the idle blink must not add its own blinks
+const gazeCase = (preset, axis) => {
+  T.preset('Neutral');
+  for (let i = 0; i < 60; i++) step1(0.15, 0, 0, 1 / 60, null, true);
+  const base = step1(0.15, 0, 0, 1 / 60, null, true).dbg.iris.map(v => v[axis]);
+  T.preset(preset);
+  for (let i = 0; i < 60; i++) step1(0.15, 0, 0, 1 / 60, null, true);
+  const now = step1(0.15, 0, 0, 1 / 60, null, true).dbg.iris.map(v => v[axis]);
+  return [now[0] - base[0], now[1] - base[1]];
+};
+{
+  const [dl, dr] = gazeCase('Look down', 1);
+  const [ul, ur] = gazeCase('Look up', 1);
+  const [rl, rr] = gazeCase('Look right', 0);
+  ok('both pupils look down together', dl > 3 && dr > 3 && Math.abs(dl - dr) < Math.max(dl, dr) * 0.25,
+     `left ${dl.toFixed(1)} px, right ${dr.toFixed(1)} px`);
+  /* both eyes must move the same *way*; the tracker adds its own per-eye
+     component on top of the action, so the magnitudes need not match */
+  ok('both pupils look up together', ul < -1.5 && ur < -1.5,
+     `left ${ul.toFixed(1)} px, right ${ur.toFixed(1)} px`);
+  ok('both pupils look the same way horizontally', rl > 1.5 && rr > 1.5,
+     `left ${rl.toFixed(1)} px, right ${rr.toFixed(1)} px`);
+}
+/* Structurally: one gaze vector, two eyes, one direction.  This is the exact
+   bug that sent one pupil up and the other down for a "look down". */
+{
+  const same = [];
+  for (const g of [[0.2, 0.2], [-0.2, 0.2], [0.25, -0.15]]) {
+    const st = renderAt([0, 0, 0, 1], { gaze: [g, g], gazeGain: 1.9 });
+    const [a, b] = st.iris;
+    same.push({ ang: Math.abs(Math.atan2(a[1], a[0]) - Math.atan2(b[1], b[0])), L: a, R: b });
+  }
+  const worstAng = Math.max(...same.map(v => v.ang));
+  const moved = same.every((v, i) => Math.hypot(v.L[0], v.L[1]) > 3 && Math.hypot(v.R[0], v.R[1]) > 3);
+  ok('one gaze direction moves both pupils the same way', worstAng < 0.05 && moved,
+     `worst angle between the two pupils ${(worstAng * 180 / Math.PI).toFixed(2)}°, both move ≥ 3 px`);
+}
+/* Wink: one lid closes, the other stays open, camera off. */
+{
+  T.preset('Wink');
+  for (let i = 0; i < 80; i++) step1(0, 0, 0, 1 / 60, null, true);
+  const wink = step1(0, 0, 0, 1 / 60, null, true).dbg.lid;
+  ok('the Wink preset closes exactly one eye', wink[0] > 0.8 && wink[1] < 0.25,
+     `lids ${wink.map(v => v.toFixed(2)).join(' / ')}`);
+  T.preset('Neutral');
+}
+/* The click-to-sculpt Wink moves eyelid geometry, not a signal: the renderer
+   has to notice the eye has closed and bring the painted lid down with it. */
+{
+  for (let i = 0; i < 40; i++) step1(0, 0, 0, 1 / 60);
+  app.sculpt.fill(0); app.outBuf.fill(0);
+  const mid = { x: (ses.DST[13 * 2] + ses.DST[14 * 2]) / 2, y: (ses.DST[13 * 2 + 1] + ses.DST[14 * 2 + 1]) / 2 };
+  T.sculptShape('wink', mid);
+  for (let i = 0; i < 80; i++) step1(0, 0, 0, 1 / 60, null, true);
+  const sculpted = step1(0, 0, 0, 1 / 60, null, true).dbg.lid;
+  ok('a sculpted wink closes the painted lid', sculpted[0] > 0.3 && sculpted[1] < 0.15,
+     `lids ${sculpted.map(v => v.toFixed(2)).join(' / ')} with camera off`);
+  app.sculpt.fill(0); app.outBuf.fill(0);
+  for (let i = 0; i < 40; i++) step1(0, 0, 0, 1 / 60);
+}
+/* Webcam path: blendshapes are the only thing that opens the mouth live. */
+{
+  const withBlends = (bs) => {
+    t += 1000 / 60;
+    T.setCamera(camFrame(0, 0, 0, t), CAM_W, CAM_H, t, bs);
+    dom.setClock(t);
+    return T.frame(t, 1 / 60, true);
+  };
+  T.preset('live');
+  for (let i = 0; i < 30; i++) withBlends({ jawOpen: 0 });
+  for (let i = 0; i < 90; i++) withBlends({ jawOpen: 0.9 });
+  const open = withBlends({ jawOpen: 0.9 });
+  ok('webcam jawOpen opens the mouth', open.dbg.mouth.h > 0.12 && open.jaw > 0.05 && open.dbg.mouth.upperTeeth > 0,
+     `jaw ${(open.jaw * deg).toFixed(1)}°, mouth envelope ${open.dbg.mouth.h.toFixed(3)}, ${open.dbg.mouth.upperTeeth} teeth`);
+  const lipRest = ses.DST[13 * 2 + 1];
+  for (let i = 0; i < 90; i++) withBlends({ mouthSmileLeft: 1, mouthSmileRight: 1 });
+  const smile = withBlends({ mouthSmileLeft: 1, mouthSmileRight: 1 });
+  ok('webcam smile moves the mouth corners', ses.DST[123] - ses.S2[123] < -3,
+     `corner lift ${(ses.DST[123] - ses.S2[123]).toFixed(1)} px (upper lip ${(lipRest - ses.DST[13 * 2 + 1]).toFixed(1)} px)`);
+  for (let i = 0; i < 90; i++) withBlends({ eyeBlinkLeft: 1 });
+  const blink = withBlends({ eyeBlinkLeft: 1 });
+  ok('webcam blinkLeft closes one eye', blink.dbg.lid[0] > 0.8 && blink.dbg.lid[1] < 0.25,
+     `lids ${blink.dbg.lid.map(v => v.toFixed(2)).join(' / ')}`);
+  for (let i = 0; i < 60; i++) withBlends({});
+  T.preset('Neutral');
+  for (let i = 0; i < 40; i++) step1(0, 0, 0, 1 / 60);
+}
 
 section('mouth interior');
 const outputCtx = dom.byId.get('puppet').getContext('2d');
@@ -349,7 +490,7 @@ ok('teeth/tongue outputs stay finite', [tongueFrame.dbg.mouth.h, tongueFrame.dbg
 T.preset('Neutral');
 
 section('interaction');
-const pc = dom.byId.get('puppet'), pcCtx = pc.getContext('2d'), app = T.state();
+const pc = dom.byId.get('puppet'), pcCtx = pc.getContext('2d');
 const rack = dom.byId.get('sculptTools');
 ok('sculpt buttons registered', rack.children.length >= 8, `${rack.children.length} tools`);
 ok('preset rack populated', dom.byId.get('presets').children.length > 15, `${dom.byId.get('presets').children.length} presets`);

@@ -45,6 +45,11 @@
   /* upper / lower inner lip run (used to hang teeth and the tongue) */
   const UP_LIP = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308];
   const LO_LIP = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308];
+  /* `L`/`R` are screen sides, not the face's own sides: the preview is a
+     mirror, so the subject's left eye is the eye on the left of the screen.
+     The blendshape names are anatomical, so they map straight across (see the
+     eyelid pass in ui.js).  `ICON`/`LIDS` index sets below follow the same
+     convention. */
   const LIDS = { L: { up: [159, 158, 160, 161, 157], lo: [145, 153, 144, 154, 163], ic: 133, oc: 33 },
                  R: { up: [386, 385, 387, 388, 384], lo: [374, 380, 373, 381, 390], ic: 362, oc: 263 } };
   const EYE_RING = { L: LEYE, R: REYE };
@@ -314,6 +319,11 @@
     const { fw, fh, ctr, mid, noseY } = head;
     const cx = mid[0], yMouth = (head.P[13][1] + head.P[14][1]) / 2;
     const eyeY = (head.P[159][1] + head.P[386][1]) / 2;
+    /* Upper/lower lid is decided against the eye *corners*, not against
+       eyeY: eyeY is the average of the two main upper-lid landmarks, so
+       testing "p[1] < eyeY" classified the upper lids themselves as lower —
+       a squint then lifted the upper lid and widened the eye.  */
+    const lidMidY = u => (head.P[u ? 263 : 33][1] + head.P[u ? 362 : 133][1]) / 2;
     const SD = v => (v >= 0 ? 1 : -1);
     for (let i = 0; i < 478; i++) {
       const p = head.P[i];
@@ -326,7 +336,11 @@
       /* ---- mouth ---------------------------------------------------- */
       const mouthMask = Math.exp(-(((p[0] - cx) / (fw * 0.55)) ** 2) - ((p[1] - yMouth) / (fh * 0.22)) ** 2);
       if (mouthMask > 0.004) {
-        const lift = clamp01((v - 0.05) / 0.4);          // 0 at the vermilion, 1 at the chin
+        /* "0 at the vermilion, 1 at the chin" has to be measured from the
+           mouth line itself.  Anchoring it at a fixed height faded the smile
+           out exactly where the corners are, so a preset smile moved the
+           cheeks and left the mouth alone. */
+        const lift = clamp01((p[1] - yMouth) / (fh * 0.4));
         const up = 1 - lift;
         const smileAmt = sm * mouthMask;
         dy += (-smileAmt * fh * 0.20 * au * au * up - A.fr * fh * 0.16 * au * au * up);
@@ -359,11 +373,19 @@
         dy -= A.nz * fh * 0.03 * (Math.abs(p[0] - cx) < fw * 0.3 ? 1 : 0.5);
         dx += (p[0] > cx ? 1 : -1) * A.ur * fw * 0.02;
       }
-      /* ---- eyes: squint narrows the aperture ------------------------ */
+      /* ---- eyes: squint narrows the aperture, blink/wink closes it --- */
       const eyeMask = Math.exp(-(((Math.abs(p[0] - cx) - fw * 0.24) / (fw * 0.17)) ** 2) - ((p[1] - eyeY) / (fh * 0.09)) ** 2);
-      if (eyeMask > 0.004) {
-        const isUpper = p[1] < eyeY;
+      /* Lids only.  Displacing the corners with the apertures sheared the eye
+         box (one corner up, one down), and the irises have to stay rigid. */
+      const isEyeCorner = i === 33 || i === 133 || i === 263 || i === 362;
+      if (eyeMask > 0.004 && i < 468 && !isEyeCorner) {
+        const isUpper = p[1] < (u < 0 ? lidMidY(0) : lidMidY(1));
         dy += (isUpper ? 1 : -0.55) * A.sq * fh * 0.05 * eyeMask;
+        /* bL/bR are the image-left / image-right eyelid actions: the upper
+           lid comes down and the lower lid lifts, so the eye in the picture
+           actually shuts instead of only being covered by painted skin. */
+        const blink = u < 0 ? A.bL : A.bR;
+        if (blink) dy += (isUpper ? 1 : -0.42) * blink * fh * 0.105 * eyeMask;
       }
       const g3 = i * 3;
       d[g3] += dx; d[g3 + 1] += dy; d[g3 + 2] += dz;
@@ -591,7 +613,7 @@
        resampled photo.  Inside the band the pose is exactly neutral, so a
        resting frame stays on the crisp source photograph; real motion above
        it is followed normally.                                            */
-    const poseDead = (c.poseDead === undefined ? 0.5 : c.poseDead) / rad;
+    const poseDead = (c.poseDead === undefined ? POSE_DEAD_DEG : c.poseDead) / rad;
     const deadband = v => Math.abs(v) < poseDead ? 0 : v;
     S.ypr.yaw = oneEuroRun(S.yprF.yaw, deadband(yaw), t);
     S.ypr.pitch = oneEuroRun(S.yprF.pitch, deadband(pitch), t);
@@ -674,12 +696,25 @@
     if (bs) for (const c of bs) map[c.categoryName] = c.score;
     return n => map[n] || 0;
   }
+  /* Aperture of one eye, normalised by the eye's own width.  The gap is
+     measured perpendicular to the corner-to-corner axis, so a pose that
+     shears or rotates the eye box (tracked head, zoom) cannot masquerade as
+     a squint — only the lids moving towards each other can. */
   function eyeOpeningRatio(P, which) {
     const d = LIDS[which];
-    const up = d.up.reduce((a, i) => a + P[i].y, 0) / d.up.length;
-    const lo = d.lo.reduce((a, i) => a + P[i].y, 0) / d.lo.length;
-    const ew = Math.hypot(P[d.oc].x - P[d.ic].x, P[d.oc].y - P[d.ic].y) || 1;
-    return (lo - up) / ew;
+    const ic = P[d.ic], oc = P[d.oc];
+    const ex = oc.x - ic.x, ey = oc.y - ic.y;
+    const ew = Math.hypot(ex, ey) || 1;
+    const nx = -ey / ew, ny = ex / ew;
+    let ux = 0, uy = 0, lx = 0, ly = 0;
+    for (const i of d.up) { ux += P[i].x; uy += P[i].y; }
+    for (const i of d.lo) { lx += P[i].x; ly += P[i].y; }
+    ux /= d.up.length; uy /= d.up.length; lx /= d.lo.length; ly /= d.lo.length;
+    return Math.abs((lx - ux) * nx + (ly - uy) * ny) / ew;
+  }
+  function eyeWidth(P, which) {
+    const d = LIDS[which];
+    return Math.hypot(P[d.oc].x - P[d.ic].x, P[d.oc].y - P[d.ic].y) || 1;
   }
   function irisOffset(P, which, S) {
     const I = IRIS[which], d = LIDS[which];
@@ -694,10 +729,15 @@
   }
 
   const eulerYaw = q => eulerFromQuat(q).yaw;
+  /* Pose deadband in radians.  The renderer needs the same number: it holds
+     the source photo while the head is inside the band and only lets tracked
+     translation / dolly move the shell once the pose is real. */
+  const POSE_DEAD_DEG = 0.5;
+  const POSE_DEAD_RAD = POSE_DEAD_DEG * Math.PI / 180;
   const eulerYPR = q => eulerFromQuat(q);
 
   root.FMEngine = {
-    eulerYaw, eulerYPR,
+    eulerYaw, eulerYPR, POSE_DEAD_DEG, POSE_DEAD_RAD,
     /* tables + accessors */
     lx, ly, lz,
     OVAL, CONTOUR, LEYE, REYE, LBROW, RBROW, LIPS_O, LIPS_I, NOSE, UP_LIP, LO_LIP, LIDS, IRIS, EYE_RING,
@@ -711,6 +751,6 @@
     /* audio */
     createViseme, visemeUpdate, visemeActions,
     /* signals */
-    blendGetter, eyeOpeningRatio, irisOffset
+    blendGetter, eyeOpeningRatio, eyeWidth, irisOffset
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
