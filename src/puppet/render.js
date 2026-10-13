@@ -191,6 +191,9 @@
       S.BASE[i * 3] = p[0]; S.BASE[i * 3 + 1] = p[1]; S.BASE[i * 3 + 2] = p[2];
     }
     S.depth = new Float32Array(n);
+    /* {x,y} view of the photo layout: the eyelid pass measures how far the
+       eye has closed against it. */
+    S.S2pts = Array.from({ length: n }, (_, i) => ({ x: S.S2[i * 2], y: S.S2[i * 2 + 1] }));
     const mkNormals = (list) => {
       const out = new Float32Array(list.length);
       for (let t = 0; t < list.length; t += 3) {
@@ -221,7 +224,6 @@
     S.triA = mkPass(spec.mesh.base, S.normals, { pad: 0.35, cull: -0.02, mirror: true });
     S.triB = mkPass(spec.mesh.face, S.normalsFace, { pad: 0.28, cull: -0.05, mirror: true });
     S.mid = spec.head.mid.slice();
-    S.axis = E.tmjAxis(spec.head);
     S.arches = buildArches();
     prepIris(S);
     buildPlate(S);
@@ -240,16 +242,25 @@
       C[i] = [p[0], p[1], p[2]];
       if (delta) { C[i][0] += delta[i * 3]; C[i][1] += delta[i * 3 + 1]; C[i][2] += delta[i * 3 + 2]; }
     }
+    /* The mandible follows the *change* in mouth opening, not the absolute
+       gap: the source photograph already has a mouth opening of its own, and
+       rotating the jaw by it painted the chin on every frame — a resting
+       face could never stay on the untouched photo. */
     const gapNow = Math.hypot(C[13][0] - C[14][0], C[13][1] - C[14][1]);
+    const gapRest = Math.hypot(head.P[13][0] - head.P[14][0], head.P[13][1] - head.P[14][1]);
     const expressionOpen = clamp01(st.jawOpen || 0);
-    const want = clamp01(Math.max(gapNow / (head.fh * 0.17), expressionOpen)) * 0.36;
-    S.jaw = FM.slew(S.jaw, want, st.dt || 1 / 60, 3.2, 3.6);
+    /* 0.36 rad (20.6 deg) of mandible rotation only separated the lips by
+       ~15 px on a 78 px mouth, so a "wide open" preset read as a stretched
+       lip line rather than an open mouth.  0.5 rad is still inside a real
+       jaw's range and gives the aperture the envelope expects. */
+    const want = clamp01(Math.max((gapNow - gapRest) / (head.fh * 0.17), expressionOpen)) * 0.5;
+    /* Speech runs at ~4 syllables a second; the old 3.2/s slew could not
+       follow one, so the talking preset only ever wobbled the jaw. */
+    S.jaw = FM.slew(S.jaw, want, st.dt || 1 / 60, 14, 10);
     if (jawGain > 0.01) {
-      /* Canvas y grows downward.  With the TMJ axis used here, a positive
-         mouth-open amount needs the negative right-hand rotation; the old
-         sign lifted the lower lip into the upper lip, so webcam jawOpen and
-         speaking presets appeared to keep the mouth closed. */
-      E.applyJaw(head, C, -S.jaw * jawGain, S.axis);
+      /* A positive amount opens the mouth: the mandible field moves the
+         jaw's points downward (canonical y grows toward the chin). */
+      E.applyJaw(head, C, S.jaw * jawGain);
     }
     /* hair spring: chases the head, lags, capped */
     const H = S.hair;
@@ -270,17 +281,47 @@
     const ox = st.ox || 0, oy = st.oy || 0, sc = st.scale || 1;
     const zc = st.depthGain || 0;
     const pivotZ = (head.P[10][2] + head.P[152][2]) * 0.5 * zc;
-    const proj = (p) => {
+    /* Weak-perspective projection of a canonical point.  `pan` adds the
+       tracker's translation/scale; projPose is the pose-only projection that
+       drives the shell deformation.  projPose(rest) against
+       neutralProj(rest) is the identity, which is what makes a resting frame
+       exactly the photograph. */
+    const panW = clamp01(st.panWeight === undefined ? 1 : st.panWeight);
+    const project = (p, pan) => {
       const rx = p[0] - cx, ry = p[1] - cy, rz = p[2] - pivotZ;
       const mx = R[0] * rx + R[1] * ry + R[2] * rz;
       const my = R[3] * rx + R[4] * ry + R[5] * rz;
       const mz = R[6] * rx + R[7] * ry + R[8] * rz;
-      let d = f - mz * sc;
+      const s = pan ? sc : 1;
+      let d = f - mz * s;
       if (Math.abs(d) < f * 0.25) d = d < 0 ? -f * 0.25 : f * 0.25;
-      const k = f / d;
-      return [cx + mx * sc * k + ox, cy + my * sc * k + oy, mz];
+      const k = f / d * s;
+      return [cx + mx * k + (pan ? ox : 0), cy + my * k + (pan ? oy : 0), mz];
+    };
+    const proj = (p) => project(p, true);
+    /* The deformation is the difference between the *posed* shell and the
+       resting photo layout, not between two equally posed projections:
+       subtracting two equally posed points cancels every rigid term, which
+       left the face a flat frozen photo while the landmark dots moved.   */
+    const projPose = (p) => project(p, false);
+    /* Bulk motion, applied outside the difference so it cannot cancel: the
+       head's translation/scale glide the shell (and everything drawn from
+       D) once the pose is real, and do nothing at all while it rests. */
+    const panX = ox * panW, panY = oy * panW;
+    const panScale = 1 + (sc - 1) * panW;
+    const neutralProj = (p) => {
+      let d = f - (p[2] - pivotZ);
+      if (Math.abs(d) < f * 0.25) d = d < 0 ? -f * 0.25 : f * 0.25;
+      return [cx + (p[0] - cx) * f / d, cy + (p[1] - cy) * f / d];
     };
     S.proj = proj;
+    S.projPose = projPose;
+    S.fEll = f;
+    S.panW = panW;
+    S.pan = [panX, panY];
+    S.panScale = panScale;
+    S.neutralProj = neutralProj;
+    S.zc = zc;
     const body = st.bodyAt || null;
     for (let i = 0; i < n; i++) {
       const w = mesh.w[i], sx = S.S2[i * 2], sy = S.S2[i * 2 + 1];
@@ -292,9 +333,12 @@
       }
       const isFace = i < 478;
       const cur = isFace ? C[i] : [S.BASE[i * 3], S.BASE[i * 3 + 1], S.BASE[i * 3 + 2]];
-      const p1 = isFace ? proj([cur[0], cur[1], cur[2] * (1 + zc)]) : proj(cur);
-      const p0 = isFace ? proj([head.P[i][0], head.P[i][1], head.P[i][2] * (1 + zc)])
-                        : proj([S.BASE[i * 3], S.BASE[i * 3 + 1], S.BASE[i * 3 + 2]]);
+      const rest = isFace
+        ? [head.P[i][0], head.P[i][1], head.P[i][2] * (1 + zc)]
+        : [S.BASE[i * 3], S.BASE[i * 3 + 1], S.BASE[i * 3 + 2]];
+      const posed = isFace ? [cur[0], cur[1], cur[2] * (1 + zc)] : cur;
+      const p1 = projPose(posed);
+      const p0 = neutralProj(rest);
       let dx = (p1[0] - p0[0]) * w, dy = (p1[1] - p0[1]) * w;
       if (mesh.kind[i] === 1 && hg > 0) {
         const info = mesh.ringOf[i];
@@ -302,8 +346,15 @@
         const top = clamp01((head.ctr[1] - sy) / head.fh + 0.75);
         dx += hlx * hw * top; dy += hly * hw * top;
       }
-      S.DST[i * 2] = sx + dx;
-      S.DST[i * 2 + 1] = sy + dy;
+      /* Tracked translation and dolly are the head's own bulk motion — the
+         neck pivot, leaning in — so they belong on the shell, but only once
+         the head is really moving.  `panWeight` is 0 while the pose sits
+         inside its deadband (a still head must not slide the photo) and
+         ramps to 1 as the turn becomes real.  The background is pinned
+         (w = 0), so the frame never swims. */
+      const wx = sx + dx, wy = sy + dy;
+      S.DST[i * 2] = cx + (wx - cx) * panScale + panX;
+      S.DST[i * 2 + 1] = cy + (wy - cy) * panScale + panY;
       S.depth[i] = p1[2] * w + S.BASE[i * 3 + 2] * (1 - w) * 0.4;
     }
     if (st.limits !== false) {
@@ -312,8 +363,8 @@
           const w = mesh.w[i];
           if (w <= 0) continue;
           const d = out[i];
-          const p1 = proj([d[0], d[1], d[2] * (1 + zc)]);
-          const p0 = proj([C[i][0], C[i][1], C[i][2] * (1 + zc)]);
+          const p1 = projPose([d[0], d[1], d[2] * (1 + zc)]);
+          const p0 = projPose([C[i][0], C[i][1], C[i][2] * (1 + zc)]);
           S.DST[i * 2] += (p1[0] - p0[0]) * w;
           S.DST[i * 2 + 1] += (p1[1] - p0[1]) * w;
         }
@@ -348,7 +399,6 @@
   function drawShell(S, ctx, st, pass, opts) {
     const o = opts || {};
     const DST = S.DST, S2 = S.S2, W = S.W, H = S.H;
-    const p = S.proj;
     /* Depth key + temporally coherent ordering.  Start from last frame's
        order (insertion sort is O(m) when the pose barely moved), but if the
        budget blows up during a fast turn, fall back to a stable merge sort.
@@ -397,12 +447,6 @@
         }
       }
     }
-    /* Frontal frames can stay on the original photograph.  This is the
-       important quality guard: a 2.5D triangle warp is never allowed to
-       repaint a straight-on face just because the tracker emitted a noisy
-       landmark residual.  We still sort/prepare the pass above so its state
-       is ready if the head later turns. */
-    if (o.skipPaint) return 0;
     const R = matFromQuat(st.q);
     const midX = S.mid[0];
     const pad = pass.pad * (o.padScale || 1);
@@ -453,11 +497,14 @@
          sign change here is a real fold, not a legitimate head turn.  The
          plate underneath supplies a calm fallback for that tiny triangle. */
       if (area * det <= 0) continue;
+      /* Both triangles are wound identically, so 1/det is the affine scale
+         and each coefficient below is the cofactor of the 2x2 system
+         [s1-s0  s2-s0] x = [V_i - V_0]. */
       const k = 1 / det;
-      const ma = ((bx - ax) * (s2y - s0y) - (by - ay) * (s2x - s0x)) * k;
-      const mb = ((by - ay) * (s1x - s0x) - (bx - ax) * (s1y - s0y)) * k;
-      const mc = ((cx - ax) * (s2y - s0y) - (cy - ay) * (s2x - s0x)) * k;
-      const md = ((cy - ay) * (s1x - s0x) - (cx - ax) * (s1y - s0y)) * k;
+      const ma = ((bx - ax) * (s2y - s0y) - (cx - ax) * (s1y - s0y)) * k;
+      const mb = ((by - ay) * (s2y - s0y) - (cy - ay) * (s1y - s0y)) * k;
+      const mc = ((cx - ax) * (s1x - s0x) - (bx - ax) * (s2x - s0x)) * k;
+      const md = ((cy - ay) * (s1x - s0x) - (by - ay) * (s2x - s0x)) * k;
       const me = ax - ma * s0x - mc * s0y;
       const mf = ay - mb * s0x - md * s0y;
       const gx = (ax + bx + cx) / 3, gy = (ay + by + cy) / 3;
@@ -490,6 +537,35 @@
   }
 
   /* ------------------------------------------------------- accessories */
+  /* How far each eye has closed since the photo was taken, and how much of
+     that belongs on the painted lid.  A smile-squint narrows *both* eyes a
+     few percent and must not slam them shut, so the response only starts
+     after a real closure (15% of the resting aperture), is full at 65%, and
+     is applied when it is one-sided (a wink) or nearly shut (a blink). */
+  function eyelidGeometry(S, D) {
+    if (!S.restLid) {
+      S.restLid = [E.eyeOpeningRatio(S.S2pts, 'L'), E.eyeOpeningRatio(S.S2pts, 'R')];
+    }
+    const k = [0, 0];
+    for (let e = 0; e < 2; e++) {
+      const which = e ? 'R' : 'L';
+      const rest = S.restLid[e];
+      if (!(rest > 0.02)) continue;
+      /* A tracked head or a zoom squashing the eye box horizontally is not an
+         eyelid: skip the geometric read unless the eye is still roughly the
+         width it has in the photo. */
+      if (E.eyeWidth(D, which) < E.eyeWidth(S.S2pts, which) * 0.7) continue;
+      /* A cheek-raised smile squints the aperture ~45 % by itself, and the
+         old (closed - 0.15)/0.5 mapped that to a 0.6+ painted lid — which
+         then cleared the guard below and shut *both* eyes.  Only a real,
+         near-complete closure now reads as a nearly shut lid. */
+      const closed = (rest - E.eyeOpeningRatio(D, which)) / rest;
+      const raw = clamp01((closed - 0.18) / 0.80);
+      k[e] = raw * raw * (3 - 2 * raw) * 0.85;
+    }
+    return [k[0] - k[1] > 0.15 || k[0] > 0.6 ? k[0] : 0,
+            k[1] - k[0] > 0.15 || k[1] > 0.6 ? k[1] : 0];
+  }
   function drawEyelid(S, ctx, which, c, D) {
     if (c < 0.015) return;
     const d = E.LIDS[which];
@@ -565,8 +641,19 @@
     let r = 0;
     for (const k of ring) r += Math.hypot(D[k].x - pc.x, D[k].y - pc.y);
     r = (r / ring.length) || I.r;
-    const ax = ex / ew, ay = ey / ew;
-    const off = [(gaze[0] * ax - gaze[1] * ay) * ew * gain, (gaze[0] * ay + gaze[1] * ax) * ew * gain];
+    /* Gaze is a *face* direction, not an eye-local one.  Building the basis
+       from this eye's inner->outer axis flips its sign between the two eyes
+       (the corners are mirrored), which sent one pupil up and the other down
+       for the same "look down".  Both eyes share one basis: u runs between
+       the two eye centres, v is its perpendicular pointing down the face. */
+    const cen = [D[E.IRIS.L.c], D[E.IRIS.R.c]];
+    let ux = cen[1].x - cen[0].x, uy = cen[1].y - cen[0].y;
+    const ul = Math.hypot(ux, uy) || 1;
+    ux /= ul; uy /= ul;
+    let vx = -uy, vy = ux;
+    const chin = D[152], mx = (cen[0].x + cen[1].x) / 2, my = (cen[0].y + cen[1].y) / 2;
+    if ((chin.x - mx) * vx + (chin.y - my) * vy < 0) { vx = -vx; vy = -vy; }
+    const off = [(gaze[0] * ux + gaze[1] * vx) * ew * gain, (gaze[0] * uy + gaze[1] * vy) * ew * gain];
     const X = pc.x + off[0], Y = pc.y + off[1];
     const RR = Math.max(1.2, I.R * (r / I.r));
     const poly = E.EYE_RING[which].map(i => D[i]);
@@ -577,6 +664,8 @@
     poly.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
     ctx.closePath();
     ctx.clip();
+    S.lastIris = S.lastIris || [[0, 0], [0, 0]];
+    S.lastIris[e] = off;
     const a = clamp01(Math.hypot(off[0], off[1]) / (ew * 0.02));
     if (a > 0.01) {
       const grd = ctx.createRadialGradient(pc.x, pc.y, Math.max(1, r * 0.25), pc.x, pc.y, Math.max(2, r * 1.5));
@@ -676,29 +765,116 @@
       DEPTH: [0, .18, .5, .95, 1.3]          // how far back each tooth sits
     };
   }
-  function mouthFrame(head, C) {
-    const a = C[61], b = C[291], up = C[13], lo = C[14];
-    const ax = v3.norm(v3.sub(b, a));
-    let ay = v3.sub(lo, up);
-    const pr = v3.dot(ay, ax);
-    ay = v3.norm([ay[0] - ax[0] * pr, ay[1] - ax[1] * pr, ay[2] - ax[2] * pr]);
-    const az = v3.norm(v3.cross(ax, ay));
-    const mw = v3.dist(a, b) || head.fw * 0.4;
-    return { ax, ay, az, org: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2], mw,
-             upY: v3.dot(up, ay), loY: v3.dot(lo, ay) };
+  /* The mouth frame lives in *screen* space and is built from the same
+     anchored points the lips are painted from (D).  Building it in canonical
+     space and projecting it separately put the dental arches somewhere else
+     entirely — the classic "teeth floating below the mouth" bug.  ax/ay are
+     the mouth's own axes in the picture: ax runs corner to corner (image
+     left -> right), ay points from the upper lip toward the lower one.
+     `kz` converts a canonical depth offset into screen scale about the head
+     centre, so a receding arch still curves toward it.                      */
+  function mouthFrame(S, D) {
+    const head = S.head;
+    const a = D[61], b = D[291], up = D[13], lo = D[14];
+    const mw = Math.hypot(b.x - a.x, b.y - a.y) || head.fw * 0.4;
+    const ax = [(b.x - a.x) / mw, (b.y - a.y) / mw];
+    let ay = [-ax[1], ax[0]];
+    if ((lo.x - up.x) * ay[0] + (lo.y - up.y) * ay[1] < 0) ay = [-ay[0], -ay[1]];
+    const org = [(a.x + b.x) / 2, (a.y + b.y) / 2];
+    const rel = p => (p.x - org[0]) * ay[0] + (p.y - org[1]) * ay[1];
+    const mwC = Math.hypot(head.P[291][0] - head.P[61][0], head.P[291][1] - head.P[61][1]);
+    return {
+      ax, ay, org, mw,
+      upY: rel(up), loY: rel(lo),
+      kz: mwC > 1e-3 ? clamp(mw / mwC, 0.2, 5) : 1,
+      ctr: [head.ctr[0], head.ctr[1]],
+      fEll: S.fEll || head.fw * 3.1
+    };
   }
-  const mfp = (fr, u, v, w) => [
-    fr.org[0] + fr.ax[0] * u + fr.ay[0] * v + fr.az[0] * w,
-    fr.org[1] + fr.ax[1] * u + fr.ay[1] * v + fr.az[1] * w,
-    fr.org[2] + fr.ax[2] * u + fr.ay[2] * v + fr.az[2] * w
-  ];
+  /* canonical mouth-local (u, v, w) -> screen point.  u runs along the mouth,
+     v toward the lower lip, w along the view axis (negative = behind).      */
+  const mfp = (fr, u, v, w) => {
+    const x = fr.org[0] + fr.ax[0] * u + fr.ay[0] * v;
+    const y = fr.org[1] + fr.ax[1] * u + fr.ay[1] * v;
+    const zoom = 1 + (w * fr.kz) / Math.max(1, fr.fEll);
+    return [fr.ctr[0] + (x - fr.ctr[0]) * zoom, fr.ctr[1] + (y - fr.ctr[1]) * zoom];
+  };
+  /* Visible part of a convex crown quad inside the inner-lip polygon.
+     Clipping against the polygon's *bounding box* reported teeth as visible
+     when the whole crown sat outside the opening (on the chin, or above the
+     upper lip) — the harness believed it, so a mouth could show no teeth and
+     still pass.  Sutherland-Hodgman, concave-safe enough for a bbox+area. */
+  function clipQuad(quad, poly) {
+    let out = quad.map(q => [q[0], q[1]]);
+    /* The lip ring comes out of the mesh either way round depending on the
+       head's orientation; assume the winding the shoelace sign reports. */
+    let a2 = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const p = poly[i], q = poly[(i + 1) % poly.length];
+      a2 += p.x * q.y - q.x * p.y;
+    }
+    const sgn = a2 < 0 ? -1 : 1;
+    for (let i = 0; i < poly.length && out.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length];
+      const ex = b.x - a.x, ey = b.y - a.y;
+      const side = p => sgn * (ex * (p[1] - a.y) - ey * (p[0] - a.x));
+      const next = [];
+      for (let j = 0; j < out.length; j++) {
+        const p = out[j], q = out[(j + 1) % out.length];
+        const sp = side(p), sq = side(q);
+        if (sp >= 0) next.push(p);
+        if ((sp >= 0) !== (sq >= 0)) {
+          const t = sp / (sp - sq);
+          next.push([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]);
+        }
+      }
+      out = next;
+    }
+    if (out.length < 3) return { verts: null, area: 0 };
+    let area = 0;
+    for (let i = 0; i < out.length; i++) {
+      const p = out[i], q = out[(i + 1) % out.length];
+      area += p[0] * q[1] - q[0] * p[1];
+    }
+    return { verts: out.map(v => ({ x: v[0], y: v[1] })), area: Math.abs(area) * 0.5 };
+  }
   /* Draw one rigid dental arch and return visibility diagnostics. The
      upper arch is painted after the tongue to restore front-to-back order. */
-  function drawArch(S, ctx, proj3, fr, which, openAmt, cfg) {
+  function drawArch(S, ctx, fr, D, which, openAmt, cfg) {
     /* cfg = { vis, bright, warmth } straight from the sliders */
     const { TW, TH, DEPTH } = S.arches;
     const isUp = which === 'up';
-    const line = isUp ? fr.upY + openAmt * 0.16 : fr.loY - openAmt * 0.16;
+    /* Teeth are only visible through the mouth opening: without this clip the
+       gum line (which sits above the upper lip) is painted over the lip. */
+    const In = E.LIPS_I.map(i => D[i]).filter(q => q && Number.isFinite(q.x));
+    if (!polyOK(In, 1.5)) {
+      return { frontY: null, drawnTeeth: 0, alphaSum: 0, box: null, boxArea: 0, v0: null, v1: null, line: null, inner: null };
+    }
+    ctx.save();
+    ctx.beginPath();
+    In.forEach((q, i) => i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y));
+    ctx.closePath();
+    ctx.clip();
+    /* The crowns have to be drawn *inside* the opening the viewer sees
+       (upY..loY in the mouth frame).  Biting outward from the lip line put
+       the lower arch on the chin and the upper one above the upper lip;
+       both were clipped away, which is why an open mouth showed no teeth.
+       Each arch now covers a slice of the aperture and the two biting edges
+       leave the dark line between them. */
+    /* Each arch hangs from its own jaw.  The upper one is the maxilla: it
+       keeps a fixed band of itself below the upper lip no matter how wide the
+       mouth opens.  The lower one rides the mandible: a fixed band above the
+       lower lip.  The bite lines therefore separate as the mouth opens —
+       anchoring both to the *middle* of the opening (the old 0.42 * aperture)
+       made them converge there instead, leaving the teeth as a thin band in
+       the centre of the mouth that never parted. */
+    const ap = Math.max(fr.loY - fr.upY, fr.mw * 0.02);
+    /* The upper lip lifts a little as the jaw drops, so a wider opening
+       shows a little more of each arch — but the two arches can never take
+       more than 35 % of the opening each, or the dark gap between them
+       closes up and the mouth reads as one solid block of teeth. */
+    const band = Math.min(fr.mw * 0.05 + ap * 0.10, ap * 0.35);
+    const line = isUp ? fr.upY + band : fr.loY - band;
     const crown = fr.mw * (isUp ? 0.30 : 0.26);
     const teeth = [];
     for (let sd = 0; sd < 2; sd++) {
@@ -710,9 +886,8 @@
         const hh = crown * TH[j] * (1 + (((j * 13 + (sd ? 5 : 0)) % 7) - 3) * 0.015);
         const vBite = line + (isUp ? 0 : 0);
         const vGum = line + (isUp ? -hh : hh);
-        const a3 = mfp(fr, u0, vGum, z), b3 = mfp(fr, u1, vGum, z);
-        const c3 = mfp(fr, u0, vBite, z), d3 = mfp(fr, u1, vBite, z);
-        const q = [proj3(a3), proj3(b3), proj3(c3), proj3(d3)];
+        const q = [mfp(fr, u0, vGum, z), mfp(fr, u1, vGum, z),
+                   mfp(fr, u0, vBite, z), mfp(fr, u1, vBite, z)];
         if (!q.every(v => isFinite(v[0]) && isFinite(v[1]))) continue;
         teeth.push({ q, j, sd, back: DEPTH[j], hh, z, gumY: vGum, biteY: vBite });
         cum += w;
@@ -720,9 +895,11 @@
     }
     /* back teeth first: the arch reads as a curve */
     teeth.sort((a, b) => b.back - a.back);
-    const vis = clamp01(cfg.vis) * clamp01(openAmt * 2.8);
+    const vis = clamp01(cfg.vis) * clamp01(openAmt * 3.6);
     const bright = clamp01((0.62 + S.cache.lum * 0.5) * cfg.bright);
-    let frontY = null, drawnTeeth = 0, alphaSum = 0;
+    let frontY = null, drawnTeeth = 0, alphaSum = 0, box = null, boxArea = 0;
+    const inner = bounds(In);
+    let vv0 = Infinity, vv1 = -Infinity;
     for (const t of teeth) {
       const [A0, B0, C0, D0] = t.q;
       const alpha = clamp01(vis * (1 - Math.min(.5, t.back * 0.32)));
@@ -783,12 +960,30 @@
       ctx.stroke();
       ctx.restore();
       if (frontY === null || (isUp ? C0[1] > frontY : C0[1] < frontY)) frontY = C0[1];
+      /* what the viewer can actually see: the crown clipped to the opening */
+      const vis1 = clipQuad([A0, B0, C0, D0], In);
+      if (vis1.verts) {
+        const v0 = bounds(vis1.verts);
+        boxArea += vis1.area * alpha;
+        if (v0.x1 > v0.x0 && v0.y1 > v0.y0) {
+          box = box ? { x0: Math.min(box.x0, v0.x0), y0: Math.min(box.y0, v0.y0),
+                        x1: Math.max(box.x1, v0.x1), y1: Math.max(box.y1, v0.y1) } : v0;
+        }
+      }
       drawnTeeth++;
+      vv0 = Math.min(vv0, t.gumY, t.biteY);
+      vv1 = Math.max(vv1, t.gumY, t.biteY);
     }
-    return { frontY, drawnTeeth, alphaSum };
+    ctx.restore();
+    return { frontY, drawnTeeth, alphaSum, box, boxArea, v0: isFinite(vv0) ? vv0 : null,
+             v1: isFinite(vv1) ? vv1 : null, line, crown, inner };
   }
 
   function drawCavity(S, ctx, D, h) {
+    /* The interior has to go properly dark as soon as the lips part: at the
+       old 0.86*h, a half-open talking mouth was a 40 % veil over stretched
+       lip pixels, which is exactly what "the lips just stretch" looks like. */
+    const o = clamp01(h * 2.2);
     const a = D[61], b = D[291], up = D[13], lo = D[14];
     const mw = Math.hypot(b.x - a.x, b.y - a.y) || S.head.fw * 0.4;
     const gap = Math.hypot(lo.x - up.x, lo.y - up.y);
@@ -813,13 +1008,13 @@
     ctx.quadraticCurveTo(bx, by, a.x, a.y);
     ctx.closePath();
     const g = ctx.createLinearGradient(tx, ty, bx, by);
-    g.addColorStop(0, `rgba(92,28,34,${0.72 * h})`);
-    g.addColorStop(.48, `rgba(25,7,10,${0.86 * h})`);
-    g.addColorStop(1, `rgba(52,14,20,${0.78 * h})`);
+    g.addColorStop(0, `rgba(92,28,34,${0.72 * o})`);
+    g.addColorStop(.48, `rgba(25,7,10,${0.86 * o})`);
+    g.addColorStop(1, `rgba(52,14,20,${0.78 * o})`);
     ctx.fillStyle = g;
     ctx.fill();
     const rg = ctx.createRadialGradient(ocx, ocy, 1, ocx, ocy, Math.max(3, mw * 0.24));
-    rg.addColorStop(0, `rgba(4,1,2,${0.42 * h})`);
+    rg.addColorStop(0, `rgba(4,1,2,${0.42 * o})`);
     rg.addColorStop(1, 'rgba(4,1,2,0)');
     ctx.fillStyle = rg;
     ctx.fill();
@@ -827,7 +1022,7 @@
     return true;
   }
 
-  function drawTongue(S, ctx, fr, proj3, D, st, h) {
+  function drawTongue(S, ctx, fr, D, st, h) {
     const tg = clamp01(st.tongue);
     if (tg < 0.02) return false;
     const In = E.LIPS_I.map(i => D[i]);
@@ -842,7 +1037,7 @@
       const w = half * (0.5 + 0.6 * Math.sin(Math.PI * Math.min(1, 0.18 + t * 0.82)));
       const v = fr.loY + gap * 0.06 + t * (gap * 0.26 + mw * 0.06) * (0.6 + 0.4 * tg);
       const z = -mw * 0.10 + t * len;
-      sec.push({ l: proj3(mfp(fr, -w, v, z)), r: proj3(mfp(fr, w, v, z)), m: proj3(mfp(fr, 0, v, z)), t, w });
+      sec.push({ l: mfp(fr, -w, v, z), r: mfp(fr, w, v, z), m: mfp(fr, 0, v, z), t, w });
     }
     if (!sec.every(s => isFinite(s.l[0]) && isFinite(s.r[0]) && isFinite(s.m[0]))) return false;
     const bb = bounds(sec.flatMap(s => [s.l, s.r]));
@@ -941,9 +1136,8 @@
     lc.clearRect(0, 0, S.W, S.H);
     const q = st.q || [0, 0, 0, 1];
     const qAngle = 2 * Math.acos(clamp(Math.abs(q[3]), 0, 1));
-    /* Translation/scale from the webcam are not reasons to repaint a
-       straight-on photo; they are especially noisy after model inference.
-       Hold the original source until there is a real, unmistakable turn. */
+    /* Near frontal, preserve unchanged pixels but still paint every
+       meaningful deformation, including expressions and small head motions. */
     const frontal = qAngle < 0.28;
     /* A frontal still is already a pixel-perfect render.  Keep it as the
        base and repaint only moved triangles for expressions.  The full
@@ -953,14 +1147,12 @@
     const shellOpts = {
       resetOrder: S.frames < 3,
       padScale: st.quality > 1 ? 1.4 : 1,
-      /* Never paint triangle patches over a straight-on source portrait. */
-      skipPaint: frontal
+      onlyChanged: frontal
     };
     drawShell(S, lc, st, S.triA, shellOpts);
     if (st.quality > 0) drawShell(S, lc, st, S.triB, {
       ...shellOpts,
-      /* The Delaunay shell is only used on a real turn. The finer pass
-         restores facial detail there without affecting frontal sharpness. */
+      /* Restore facial detail without repainting unchanged frontal pixels. */
       alpha: st.quality > 1 ? 0.72 : 0.48
     });
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -972,26 +1164,42 @@
     } else {
       ctx.drawImage(S.layer, 0, 0);
       /* ---- accessories -------------------------------------------- */
-      const fr = mouthFrame(S.head, C);
+      const fr = mouthFrame(S, D);
       mw = Math.hypot(S.DST[61 * 2] - S.DST[291 * 2], S.DST[61 * 2 + 1] - S.DST[291 * 2 + 1]) || S.head.fw * 0.4;
       const rawGap = Math.hypot(S.DST[13 * 2] - S.DST[14 * 2], S.DST[13 * 2 + 1] - S.DST[14 * 2 + 1]);
       gap = Math.max(0, rawGap - mw * 0.035);
       S.openEnv = envelope(S.openEnv, clamp01(gap / (mw * 0.30)), st.dt || 1 / 60, 14, 9);
       h = S.openEnv;
-      const zc = st.depthGain || 0;
-      const proj3 = (p) => S.proj([p[0], p[1], p[2] * (1 + zc)]);
+      /* Every oral accessory is placed through the same screen-space mouth
+         frame the lips are painted with, so teeth, tongue and cavity can only
+         ever land on the mouth the viewer actually sees. */
       if (h > 0.004) oral.cavity = drawCavity(S, ctx, D, h) === true;
       const openAmt = clamp01(h * 1.1);
-      const lower = drawArch(S, ctx, proj3, fr, 'lo', openAmt, st);
-      oral.lowerTeeth = lower.drawnTeeth; oral.lowerAlpha = lower.alphaSum;
-      oral.tongue = drawTongue(S, ctx, fr, proj3, D, { tongue: st.tongue, gap: gap + mw * 0.035 }, h) === true;
-      const upper = drawArch(S, ctx, proj3, fr, 'up', openAmt, st);
+      const lower = drawArch(S, ctx, fr, D, 'lo', openAmt, st);
+      oral.lowerTeeth = lower.drawnTeeth; oral.lowerAlpha = lower.alphaSum; oral.teethBox = lower.box || null;
+      oral.boxLo = lower.box || null; oral.teethArea = lower.boxArea; oral.loBite = lower.line;
+      oral.tongue = drawTongue(S, ctx, fr, D, { tongue: st.tongue, gap: gap + mw * 0.035 }, h) === true;
+      const upper = drawArch(S, ctx, fr, D, 'up', openAmt, st);
       oral.upperTeeth = upper.drawnTeeth; oral.upperAlpha = upper.alphaSum;
+      oral.teethArea += upper.boxArea; oral.upBite = upper.line; oral.boxUp = upper.box || null;
+      oral.frame = lower.inner ? { upY: fr.upY, loY: fr.loY, lineLo: lower.line, lineUp: upper.line,
+                                   innerY0: lower.inner.y0, innerY1: lower.inner.y1 } : null;
+      if (upper.box) oral.teethBox = oral.teethBox
+        ? { x0: Math.min(oral.teethBox.x0, upper.box.x0), y0: Math.min(oral.teethBox.y0, upper.box.y0),
+            x1: Math.max(oral.teethBox.x1, upper.box.x1), y1: Math.max(oral.teethBox.y1, upper.box.y1) }
+        : upper.box;
       oral.lips = drawLips(S, ctx, D, mw, gap) === true;
+      /* The lid follows the *geometry* as well as the webcam signal: a wink
+         sculpt (or a tracked blink) closes the eye in the warp, and the
+         painted lid has to come down with it or the iris floats over a
+         creased eye. */
+      const lidGeo = eyelidGeometry(S, D);
+      const lid = [Math.max(clamp01(st.lid[0]), lidGeo[0]), Math.max(clamp01(st.lid[1]), lidGeo[1])];
+      S.lastLid = lid;
       drawIris(S, ctx, 0, D, st.gaze[0], st.gazeGain);
       drawIris(S, ctx, 1, D, st.gaze[1], st.gazeGain);
-      drawEyelid(S, ctx, 'L', st.lid[0], D);
-      drawEyelid(S, ctx, 'R', st.lid[1], D);
+      drawEyelid(S, ctx, 'L', lid[0], D);
+      drawEyelid(S, ctx, 'R', lid[1], D);
       drawShading(S, ctx, D, st);
     }
     /* ---- overlays -------------------------------------------------- */
@@ -1030,7 +1238,8 @@
       ctx.stroke();
       ctx.restore();
     }
-    const dbg = { tris: S.stats.tris, culled: S.stats.culled, mouth: { mw, gap, h, ...oral }, jaw: S.jaw };
+    const dbg = { tris: S.stats.tris, culled: S.stats.culled, mouth: { mw, gap, h, ...oral }, jaw: S.jaw,
+                  lid: S.lastLid || [0, 0], iris: S.lastIris || [[0, 0], [0, 0]] };
     S.lastDebug = dbg;
     return dbg;
   }

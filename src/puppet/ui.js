@@ -52,7 +52,7 @@
     actions: E.zeroActions(), live: E.zeroActions(), target: E.zeroActions(),
     sculpt: new Float32Array(478 * 2), bag: [], drag: -1, hover: -1, dragOff: { x: 0, y: 0 }, sculptMode: 'drag',
     gaze: [[0, 0], [0, 0]], gazeS: [[0, 0], [0, 0]], gazeNeutral: [[0, 0], [0, 0]], sacT: 0, sacV: [0, 0],
-    lidRaw: [0, 0], lid: [0, 0], lidN: [null, null], kissRaw: 0, kiss: 0, tongueRaw: 0, tongue: 0,
+    lidRaw: [0, 0], lid: [0, 0], blinkIdle: [0, 0], winkOn: false, lidN: [null, null], kissRaw: 0, kiss: 0, tongueRaw: 0, tongue: 0,
     liveKiss: 0, liveTongue: 0, liveSmile: 0, liveFrown: 0, liveSquint: 0,
     exprBuf: new Float32Array(478 * 3), resBuf: new Float32Array(478 * 3), tgtBuf: new Float32Array(478 * 3),
     outBuf: new Float32Array(478 * 3),
@@ -329,11 +329,18 @@
       if (!A.lidN[e]) A.lidN[e] = ratioTracker(ratio);
       ratioTrack(A.lidN[e], ratio);
       const geo = clamp01((A.lidN[e].v * 0.84 - ratio) / (A.lidN[e].v * 0.6));
+      /* Mirrored preview: the subject's `eyeBlinkLeft` is the eye on the left
+         of the screen, which is the `L` aperture set. */
       const bl = clamp01((bv(which === 'L' ? 'eyeBlinkLeft' : 'eyeBlinkRight') - 0.12) / 0.62);
-      let m = mix(geo, bl, 0.4);
+      let m = mix(geo, bl, 0.5);
+      /* A decisive blink blendshape *is* the eye being shut: honour it, or a
+         tracked wink is diluted to a half-closed squint. */
+      if (bl > 0.5) m = Math.max(m, bl * 0.95);
       const other = e === 0 ? 1 : 0;
       const otherV = A.lidRaw[other];
-      if (Math.abs((A.lidRaw[e] || 0) - otherV) > 0.45) m = Math.min(m, otherV * 0.3 + 0.02);  // a wink keeps the far eye open
+      /* The far-eye heuristic only guards geometry-driven readings; it must
+         not veto an explicit blink. */
+      if (bl < 0.5 && Math.abs((A.lidRaw[e] || 0) - otherV) > 0.45) m = Math.min(m, otherV * 0.3 + 0.02);
       A.lidRaw[e] = clamp01(m);
     }
     const L = A.live;
@@ -368,23 +375,30 @@
   function smoothSignals(dt) {
     const live = A.tracker && A.tracker.trust > 0.25;
     const sens = num('bl', 1);
-    if (!live && chk('idleBlink') && !A.camOn) {
+    /* The idle blink lives on its own channel: writing straight into A.lidRaw
+       clobbered the webcam reading and any explicit eyelid action every frame,
+       so a Wink could never hold.  It runs whenever no face is being tracked
+       (no camera, or nobody in frame) — a portrait puppet that never blinks is
+       exactly what reads as "fake".  The checkbox is `ab` ("Idle blink");
+       reading a missing id had silently disabled this for good. */
+    A.blinkIdle[0] = A.blinkIdle[1] = 0;
+    if (chk('ab') && !live) {
       const t = A.perf.t * 1000;
       if (t > A.idle.next) { A.idle.next = t + 2200 + Math.random() * 3200; A.idle.at = t; }
       const k = (t - A.idle.at) / 190;
       const v = k < 1 ? Math.sin(Math.PI * clamp01(k)) : 0;
-      A.lidRaw[0] = A.lidRaw[1] = v;
-    } else if (!live && chk('idleBlink')) {
-      const t = A.perf.t * 1000;
-      if (t > A.idle.next) { A.idle.next = t + 2200 + Math.random() * 3200; A.idle.at = t; }
-      const k = (t - A.idle.at) / 190;
-      const v = k < 1 ? Math.sin(Math.PI * clamp01(k)) : 0;
-      A.lidRaw[0] = Math.max(A.lidRaw[0], v);
-      A.lidRaw[1] = Math.max(A.lidRaw[1], v);
+      A.blinkIdle[0] = A.blinkIdle[1] = v;
     }
     for (let e = 0; e < 2; e++) {
-      const target = live ? clamp01((A.lidRaw[e] * sens - 0.08) / 0.74) : slew(A.lid[e], 0, dt, 3.2, 3.2);
-      A.lid[e] = live ? envelope(A.lid[e], target, dt, 26, 17) : slew(A.lid[e], 0, dt, 3.2, 3.2);
+      /* the targeted signal is the webcam reading, an idle blink, the rack's
+         latched wink, or an eyelid action — whichever wants the lid lowest */
+      const wink = A.winkOn && e === 0 ? 1 : 0;
+      const raw = clamp01(Math.max(A.lidRaw[e], A.blinkIdle[e], wink, nz(A.actions[e ? 'bR' : 'bL'])));
+      const target = clamp01((raw * sens - 0.08) / 0.74);
+      /* A blink is fast: 11/s closes, 8/s reopens.  The old 3.2/s never
+         reached the target inside a blink's ~190 ms, so every blink stalled
+         half way and the puppet looked sedated. */
+      A.lid[e] = live ? envelope(A.lid[e], target, dt, 26, 17) : slew(A.lid[e], target, dt, 11, 8);
     }
     /* actions: preset layer and webcam layer, then one rate limit */
     const presetActs = A.preset === 'Talking' ? E.talkAt(A.perf.t) : (E.PRESETS[A.preset] || null);
@@ -397,7 +411,9 @@
         v = Math.max(v, nz(A.live[k]) * gain);
       }
       A.target[k] = v;
-      A.actions[k] = slew(nz(A.actions[k]), v, dt, 2.2, 1.9);
+      /* 2.2/s meant a click took over a second to reach the pose and speech
+         syllables (4/s) were smeared into a wobble. */
+      A.actions[k] = slew(nz(A.actions[k]), v, dt, 8, 6);
     }
     A.kiss = envelope(A.kiss, clamp01(nz(A.liveKiss) * (live ? 1 : 0)), dt, 14, 10);
     A.tongue = envelope(A.tongue, clamp01(Math.max((live ? nz(A.liveTongue) : 0), nz(A.actions.tg), (chk('forceTongue') || A.keyT) ? 1 : 0)), dt, 16, 9);
@@ -409,9 +425,18 @@
     for (let e = 0; e < 2; e++) {
       let gx, gy;
       if (live && A.p2 && A.p2[468]) {
-        const r = E.irisOffset(A.p2, e ? 'R' : 'L');
-        gx = (r[0] - A.gazeNeutral[e][0]) * gg;
-        gy = (r[1] - A.gazeNeutral[e][1]) * gg;
+        /* irisOffset reports components in *that eye's* axis frame, whose
+           horizontal sign is mirrored between the eyes.  Rotate back into the
+           face frame so both eyes receive one direction, then let the preset
+           offsets below add to it in the same frame. */
+        const which = e ? 'R' : 'L';
+        const r = E.irisOffset(A.p2, which);
+        const d = E.LIDS[which];
+        const ex = A.p2[d.oc].x - A.p2[d.ic].x, ey = A.p2[d.oc].y - A.p2[d.ic].y;
+        const el = Math.hypot(ex, ey) || 1, ax = ex / el, ay = ey / el;
+        const lx = r[0] - A.gazeNeutral[e][0], ly = r[1] - A.gazeNeutral[e][1];
+        gx = (lx * ax - ly * ay) * gg;
+        gy = (lx * ay + ly * ax) * gg;
       } else { gx = A.sacV[0]; gy = A.sacV[1]; }
       gx += (A.actions.gx || 0) * 0.22;
       gy += (A.actions.gy || 0) * 0.11;
@@ -496,6 +521,9 @@
         ox: trust > 0.02 ? A.tracker.ox * fw * 0.5 : 0,
         oy: trust > 0.02 ? A.tracker.oy * fw * 0.4 : 0,
         scale: trust > 0.02 ? A.tracker.scale : 1,
+        /* The head's own translation/dolly only joins the render once the
+           pose leaves its deadband; inside it the photo stays pinned. */
+        panWeight: trust > 0.02 ? panWeightOf(q) : 0,
         focal: num('focal', 3.1),
         depthGain: num('dp', 1.3) - 1,
         deltaCanonical: composeDelta(P.dt),
@@ -503,7 +531,7 @@
         jawMeshGain: 1,
         limits: chk('lim'), shade: num('fs', 0.35), hairGain: num('hs', 0.6),
         gaze: A.gaze, gazeGain: num('gg', 1.9), lid: A.lid, tongue: A.tongue,
-        vis: num('tv', 0.4), bright: num('tb', 1.15), warmth: num('tw', 0),
+        vis: num('tv', 0.85), bright: num('tb', 1.15), warmth: num('tw', 0),
         showPoints: chk('showPts'), showMesh: chk('showMesh'), origOnly: chk('showOrig'),
         points: A.pointList, dragIndex: A.drag >= 0 ? A.drag : -1, hoverIndex: A.hover >= 0 ? A.hover : -1,
         bodyAt: (A.pose.JI && A.pose.cur && A.pose.neu) ? bodyAt : null
@@ -585,21 +613,33 @@
     }
     return bi;
   }
+  /* How much of the tracked translation/dolly the renderer should apply:
+     zero inside the pose deadband, ramping in over the next few degrees. */
+  const PAN_RAMP = 0.06;                                // rad
+  const panWeightOf = q => {
+    const e = E.eulerYPR(q);
+    const mag = Math.max(Math.abs(e.yaw), Math.abs(e.pitch), Math.abs(e.roll));
+    return clamp01((mag - E.POSE_DEAD_RAD) / PAN_RAMP);
+  };
   /* screen px -> canonical px.  Solves the *actual* mapping the renderer
-     uses,  dst = S2 + w·(proj(base + delta) − proj(base)),  with a numerical
-     Jacobian — so the dot lands under the pointer even while the head is
-     turned, the face is scaled and an expression is running.            */
+     uses,  dst = S2 + w·(projPose(base + delta) − neutralProj(base)),  with a
+     numerical Jacobian — so the dot lands under the pointer even while the
+     head is turned, the face is scaled and an expression is running.    */
   function screenToCanonical(i, target) {
     const S = A.ses, head = A.head;
-    if (!S || !S.proj || !head) return [0, 0, 0];
+    if (!S || !S.projPose || !head) return [0, 0, 0];
     const w = A.mesh ? A.mesh.w[i] : 1;
     const base = head.P[i];
-    const p0 = S.proj(base);
+    const zc = S.zc || 0;
+    const p0 = S.neutralProj([base[0], base[1], base[2] * (1 + zc)]);
     const sx = S.S2[i * 2], sy = S.S2[i * 2 + 1];
     const ex = A.deltaExpr[i * 3], ey = A.deltaExpr[i * 3 + 1];
+    const pan = S.pan || [0, 0], panScale = S.panScale || 1;
+    const ctr = head.ctr;
     const at = (x, y) => {
-      const p = S.proj([base[0] + ex + x, base[1] + ey + y, base[2]]);
-      return [sx + (p[0] - p0[0]) * w, sy + (p[1] - p0[1]) * w];
+      const p = S.projPose([base[0] + ex + x, base[1] + ey + y, base[2] * (1 + zc)]);
+      const wx = sx + (p[0] - p0[0]) * w, wy = sy + (p[1] - p0[1]) * w;
+      return [ctr[0] + (wx - ctr[0]) * panScale + pan[0], ctr[1] + (wy - ctr[1]) * panScale + pan[1]];
     };
     let x = A.sculpt[i * 2], y = A.sculpt[i * 2 + 1];
     const h = Math.max(0.25, head.fw * 0.002);
@@ -696,7 +736,15 @@
     else if (kind === 'kiss') { move(61, u * .3, 0); move(291, -u * .3, 0); move(13, 0, -u * .14); move(14, 0, u * .2); move(0, 0, -u * .18); move(17, 0, u * .22); }
     else if (kind === 'sad') { move(61, -u * .06, u * .46); move(291, u * .06, u * .46); move(70, 0, u * .26); move(300, 0, u * .26); }
     else if (kind === 'brows') { move(105, 0, -u * .62); move(334, 0, -u * .62); move(107, 0, -u * .5); move(336, 0, -u * .5); }
-    else if (kind === 'wink') { move(159, 0, u * .5); move(145, 0, -u * .44); }
+    else if (kind === 'wink') {
+      /* A wink is an eyelid *action*, not a displacement field: two blobs in a
+         Gaussian falloff merely translate the eye box.  Latch the lid signal
+         (the renderer also closes the painted lid from the eye's own geometry)
+         and keep a small sculpt so the surrounding skin agrees. */
+      A.winkOn = !A.winkOn;
+      flashStatus(A.winkOn ? 'Wink on — click Wink again to open the eye.' : 'Wink off.');
+      move(159, 0, u * .16); move(145, 0, -u * .12);
+    }
     else if (kind === 'puff') { move(205, u * .45, 0); move(425, -u * .45, 0); move(50, u * .3, 0); move(280, -u * .3, 0); }
     else if (kind === 'reset') { A.sculpt.fill(0); A.outBuf.fill(0); flashStatus('Face sculpt cleared.'); return true; }
     /* Repeated clicks remain an intentional way to intensify a shape, but
@@ -918,9 +966,16 @@
   const __test = {
     boot,
     buildFromLandmarks,
-    setCamera: (lm, w, h, t) => {
+    setCamera: (lm, w, h, t, blendshapes) => {
       const ok = E.trackerPush(A.tracker, lm, w, h, t);
       if (ok && !A.tracker.neutral) E.trackerSetNeutral(A.tracker, w, h);
+      /* A real video frame carries landmarks *and* blendshapes; the webcam
+         path only exists through readSignals, so tests can hand both in. */
+      if (ok && blendshapes) {
+        const categories = Array.isArray(blendshapes) ? blendshapes
+          : Object.entries(blendshapes).map(([categoryName, score]) => ({ categoryName, score }));
+        readSignals({ faceLandmarks: [lm], faceBlendshapes: [{ categories }] });
+      }
       return ok;
     },
     signals: readSignals,
