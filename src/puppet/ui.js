@@ -531,7 +531,7 @@
         jawMeshGain: 1,
         limits: chk('lim'), shade: num('fs', 0.35), hairGain: num('hs', 0.6),
         gaze: A.gaze, gazeGain: num('gg', 1.9), lid: A.lid, tongue: A.tongue,
-        vis: num('tv', 0.75), bright: num('tb', 1.15), warmth: num('tw', 0),
+        vis: num('tv', 0.85), bright: num('tb', 1.15), warmth: num('tw', 0),
         showPoints: chk('showPts'), showMesh: chk('showMesh'), origOnly: chk('showOrig'),
         points: A.pointList, dragIndex: A.drag >= 0 ? A.drag : -1, hoverIndex: A.hover >= 0 ? A.hover : -1,
         bodyAt: (A.pose.JI && A.pose.cur && A.pose.neu) ? bodyAt : null

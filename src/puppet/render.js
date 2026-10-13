@@ -861,8 +861,20 @@
        both were clipped away, which is why an open mouth showed no teeth.
        Each arch now covers a slice of the aperture and the two biting edges
        leave the dark line between them. */
+    /* Each arch hangs from its own jaw.  The upper one is the maxilla: it
+       keeps a fixed band of itself below the upper lip no matter how wide the
+       mouth opens.  The lower one rides the mandible: a fixed band above the
+       lower lip.  The bite lines therefore separate as the mouth opens —
+       anchoring both to the *middle* of the opening (the old 0.42 * aperture)
+       made them converge there instead, leaving the teeth as a thin band in
+       the centre of the mouth that never parted. */
     const ap = Math.max(fr.loY - fr.upY, fr.mw * 0.02);
-    const line = isUp ? fr.upY + ap * 0.42 : fr.loY - ap * 0.42;
+    /* The upper lip lifts a little as the jaw drops, so a wider opening
+       shows a little more of each arch — but the two arches can never take
+       more than 35 % of the opening each, or the dark gap between them
+       closes up and the mouth reads as one solid block of teeth. */
+    const band = Math.min(fr.mw * 0.05 + ap * 0.10, ap * 0.35);
+    const line = isUp ? fr.upY + band : fr.loY - band;
     const crown = fr.mw * (isUp ? 0.30 : 0.26);
     const teeth = [];
     for (let sd = 0; sd < 2; sd++) {

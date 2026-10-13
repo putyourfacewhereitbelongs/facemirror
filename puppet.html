@@ -129,7 +129,7 @@ details[open]>summary::before{content:"▾"}
 <details class="card">
   <summary>Teeth &amp; oral cavity</summary>
   <div class="set">
-    <label class="rng">Teeth visibility <output></output><input id="tv" type="range" min="0" max="1" step="0.05" value="0.75"></label>
+    <label class="rng">Teeth visibility <output></output><input id="tv" type="range" min="0" max="1" step="0.05" value="0.85"></label>
     <label class="rng">Teeth brightness <output></output><input id="tb" type="range" min="0.7" max="1.2" step="0.01" value="1.1"></label>
     <label class="rng">Teeth warmth <output></output><input id="tw" type="range" min="0" max="1" step="0.05" value="0"></label>
     <p class="hint">The arches are rigid bodies hinged on the mandible, sized from your photo's own mouth width, and lit
@@ -2382,8 +2382,20 @@ details[open]>summary::before{content:"▾"}
        both were clipped away, which is why an open mouth showed no teeth.
        Each arch now covers a slice of the aperture and the two biting edges
        leave the dark line between them. */
+    /* Each arch hangs from its own jaw.  The upper one is the maxilla: it
+       keeps a fixed band of itself below the upper lip no matter how wide the
+       mouth opens.  The lower one rides the mandible: a fixed band above the
+       lower lip.  The bite lines therefore separate as the mouth opens —
+       anchoring both to the *middle* of the opening (the old 0.42 * aperture)
+       made them converge there instead, leaving the teeth as a thin band in
+       the centre of the mouth that never parted. */
     const ap = Math.max(fr.loY - fr.upY, fr.mw * 0.02);
-    const line = isUp ? fr.upY + ap * 0.42 : fr.loY - ap * 0.42;
+    /* The upper lip lifts a little as the jaw drops, so a wider opening
+       shows a little more of each arch — but the two arches can never take
+       more than 35 % of the opening each, or the dark gap between them
+       closes up and the mouth reads as one solid block of teeth. */
+    const band = Math.min(fr.mw * 0.05 + ap * 0.10, ap * 0.35);
+    const line = isUp ? fr.upY + band : fr.loY - band;
     const crown = fr.mw * (isUp ? 0.30 : 0.26);
     const teeth = [];
     for (let sd = 0; sd < 2; sd++) {
@@ -3293,7 +3305,7 @@ details[open]>summary::before{content:"▾"}
         jawMeshGain: 1,
         limits: chk('lim'), shade: num('fs', 0.35), hairGain: num('hs', 0.6),
         gaze: A.gaze, gazeGain: num('gg', 1.9), lid: A.lid, tongue: A.tongue,
-        vis: num('tv', 0.75), bright: num('tb', 1.15), warmth: num('tw', 0),
+        vis: num('tv', 0.85), bright: num('tb', 1.15), warmth: num('tw', 0),
         showPoints: chk('showPts'), showMesh: chk('showMesh'), origOnly: chk('showOrig'),
         points: A.pointList, dragIndex: A.drag >= 0 ? A.drag : -1, hoverIndex: A.hover >= 0 ? A.hover : -1,
         bodyAt: (A.pose.JI && A.pose.cur && A.pose.neu) ? bodyAt : null

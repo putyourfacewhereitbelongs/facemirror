@@ -468,7 +468,7 @@ const gazeCase = (preset, axis) => {
 section('mouth interior');
 const outputCtx = dom.byId.get('puppet').getContext('2d');
 const toothVisibility = dom.byId.get('tv');
-toothVisibility.value = '0.75';                 // the value the panel ships with
+toothVisibility.value = '0.85';                 // the value the panel ships with
 T.preset('Neutral');
 for (let i = 0; i < 35; i++) step1(0.2, 0, 0, 1 / 60, null, true);
 resetOne(outputCtx);
@@ -521,11 +521,14 @@ ok('teeth/tongue outputs stay finite', [tongueFrame.dbg.mouth.h, tongueFrame.dbg
   const ap = fr ? fr.innerY1 - fr.innerY0 : 0;
   const bites = !!fr && fr.lineUp >= fr.upY - 1 && fr.lineLo <= fr.loY + 1;
   const inside = !!box && !!fr && box.y0 >= fr.innerY0 - 2.5 && box.y1 <= fr.innerY1 + 2.5;
-  const cover = fr && m.mw > 1 ? m.teethArea / (ap * m.mw) : 0;
+  /* How much of the opening the arches take, top and bottom, and how much
+     dark gap is left between them.  A real open mouth is roughly a third
+     teeth, a third dark, a third teeth. */
+  const share = fr ? (fr.lineUp - fr.upY) / (fr.loY - fr.upY) : 0;
   ok('a wide open mouth shows its teeth inside the opening',
-     m.h > 0.4 && inside && bites && ap > 8 && cover > 0.08,
-     `envelope ${m.h.toFixed(2)}, visible teeth ${m.teethArea.toFixed(0)} px² = ${(cover * 100).toFixed(0)}% of a ` +
-     `${ap.toFixed(0)}x${m.mw.toFixed(0)} px opening, ` +
+     m.h > 0.4 && inside && bites && ap > 8 && m.teethArea > 80 && share > 0.2 && share < 0.45,
+     `envelope ${m.h.toFixed(2)}, visible teeth ${m.teethArea.toFixed(0)} px² in a ${ap.toFixed(0)}x${m.mw.toFixed(0)} px opening, ` +
+     `each arch ${(share * 100).toFixed(0)}% of it, ` +
      `bites ${fr ? `${fr.lineUp.toFixed(0)}/${fr.lineLo.toFixed(0)} vs lips ${fr.innerY0.toFixed(0)}..${fr.innerY1.toFixed(0)}` : 'n/a'}`);
 
   /* ...and a closed mouth shows none of them, even at full visibility. */
@@ -576,19 +579,35 @@ ok('teeth/tongue outputs stay finite', [tongueFrame.dbg.mouth.h, tongueFrame.dbg
        lipLo > 6 && chin > 6 && Math.abs(lipLo - chin) < 3 && Math.abs(lipUp) < 3,
        `lower lip ${lipLo.toFixed(1)} px, chin ${chin.toFixed(1)} px, upper lip ${lipUp.toFixed(1)} px`);
     /* And the arches part rather than slide: the upper stays with the
-       maxilla, the lower rides down with the mandible. */
+       maxilla, the lower rides down with the mandible, and the dark gap
+       between the bite lines grows with the opening.  Anchoring both arches
+       to the *middle* of the opening made the teeth a thin band in the
+       centre of the mouth that never separated. */
     const cu = mOpen.boxUp, cl = mOpen.boxLo;
     const mid = b => (b ? (b.y0 + b.y1) / 2 : null);
     FMEngine.talkAt = () => ({ j: 0.5 });
     for (let i = 0; i < 60; i++) stepOff();
     const half = ses.lastDebug.mouth;
     FMEngine.talkAt = realTalk;
+    const gaps = [];
+    for (const j of [0.15, 0.3, 0.5, 0.75]) {
+      FMEngine.talkAt = () => ({ j });
+      for (let i = 0; i < 60; i++) stepOff();
+      const mm = ses.lastDebug.mouth;
+      if (mm.frame) gaps.push({ j, ap: mm.frame.innerY1 - mm.frame.innerY0, gap: mm.frame.lineLo - mm.frame.lineUp,
+                                band: mm.frame.lineUp - mm.frame.upY });
+    }
+    FMEngine.talkAt = realTalk;
     for (let i = 0; i < 60; i++) stepOff();
-    const hu = mid(half.boxUp), hl = mid(half.boxLo);
+    const hu = mid(half ? half.boxUp : null), hl = mid(half ? half.boxLo : null);
     ok('the teeth part with the jaw instead of sliding down together',
-       !!cu && !!cl && !!half.boxUp && !!half.boxLo &&
+       !!cu && !!cl && hu !== null && hl !== null &&
        Math.abs(mid(cu) - hu) < 3 && (mid(cl) - hl) > 3,
        `upper arch moved ${(mid(cu) - hu).toFixed(1)} px, lower arch ${(mid(cl) - hl).toFixed(1)} px between half and full open`);
+    const growing = gaps.length === 4 && gaps.every((g, i) => i === 0 || g.gap > gaps[i - 1].gap + 0.4);
+    const bandUp = gaps[0] && gaps[3] ? gaps[3].band - gaps[0].band : 0;
+    ok('the gap between the arches opens with the mouth', growing && gaps[3].gap > 5 && bandUp > 1.5,
+       gaps.map(g => `${g.ap.toFixed(0)}px→${g.gap.toFixed(1)}px`).join(' ') + ` (aperture→arch gap, band ${gaps[0].band.toFixed(1)}→${gaps[3].band.toFixed(1)} px)`);
   }
 
   /* A smile squints the aperture by itself; the painted lid must not follow
