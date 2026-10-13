@@ -250,8 +250,14 @@
     const gapNow = Math.hypot(C[13][0] - C[14][0], C[13][1] - C[14][1]);
     const gapRest = Math.hypot(head.P[13][0] - head.P[14][0], head.P[13][1] - head.P[14][1]);
     const expressionOpen = clamp01(st.jawOpen || 0);
-    const want = clamp01(Math.max((gapNow - gapRest) / (head.fh * 0.17), expressionOpen)) * 0.36;
-    S.jaw = FM.slew(S.jaw, want, st.dt || 1 / 60, 3.2, 3.6);
+    /* 0.36 rad (20.6 deg) of mandible rotation only separated the lips by
+       ~15 px on a 78 px mouth, so a "wide open" preset read as a stretched
+       lip line rather than an open mouth.  0.5 rad is still inside a real
+       jaw's range and gives the aperture the envelope expects. */
+    const want = clamp01(Math.max((gapNow - gapRest) / (head.fh * 0.17), expressionOpen)) * 0.5;
+    /* Speech runs at ~4 syllables a second; the old 3.2/s slew could not
+       follow one, so the talking preset only ever wobbled the jaw. */
+    S.jaw = FM.slew(S.jaw, want, st.dt || 1 / 60, 14, 10);
     if (jawGain > 0.01) {
       /* Canvas y grows downward.  With the TMJ axis used here, a positive
          mouth-open amount needs the negative right-hand rotation; the old
@@ -791,6 +797,45 @@
     const zoom = 1 + (w * fr.kz) / Math.max(1, fr.fEll);
     return [fr.ctr[0] + (x - fr.ctr[0]) * zoom, fr.ctr[1] + (y - fr.ctr[1]) * zoom];
   };
+  /* Visible part of a convex crown quad inside the inner-lip polygon.
+     Clipping against the polygon's *bounding box* reported teeth as visible
+     when the whole crown sat outside the opening (on the chin, or above the
+     upper lip) — the harness believed it, so a mouth could show no teeth and
+     still pass.  Sutherland-Hodgman, concave-safe enough for a bbox+area. */
+  function clipQuad(quad, poly) {
+    let out = quad.map(q => [q[0], q[1]]);
+    /* The lip ring comes out of the mesh either way round depending on the
+       head's orientation; assume the winding the shoelace sign reports. */
+    let a2 = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const p = poly[i], q = poly[(i + 1) % poly.length];
+      a2 += p.x * q.y - q.x * p.y;
+    }
+    const sgn = a2 < 0 ? -1 : 1;
+    for (let i = 0; i < poly.length && out.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length];
+      const ex = b.x - a.x, ey = b.y - a.y;
+      const side = p => sgn * (ex * (p[1] - a.y) - ey * (p[0] - a.x));
+      const next = [];
+      for (let j = 0; j < out.length; j++) {
+        const p = out[j], q = out[(j + 1) % out.length];
+        const sp = side(p), sq = side(q);
+        if (sp >= 0) next.push(p);
+        if ((sp >= 0) !== (sq >= 0)) {
+          const t = sp / (sp - sq);
+          next.push([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]);
+        }
+      }
+      out = next;
+    }
+    if (out.length < 3) return { verts: null, area: 0 };
+    let area = 0;
+    for (let i = 0; i < out.length; i++) {
+      const p = out[i], q = out[(i + 1) % out.length];
+      area += p[0] * q[1] - q[0] * p[1];
+    }
+    return { verts: out.map(v => ({ x: v[0], y: v[1] })), area: Math.abs(area) * 0.5 };
+  }
   /* Draw one rigid dental arch and return visibility diagnostics. The
      upper arch is painted after the tongue to restore front-to-back order. */
   function drawArch(S, ctx, fr, D, which, openAmt, cfg) {
@@ -800,13 +845,22 @@
     /* Teeth are only visible through the mouth opening: without this clip the
        gum line (which sits above the upper lip) is painted over the lip. */
     const In = E.LIPS_I.map(i => D[i]).filter(q => q && Number.isFinite(q.x));
-    if (!polyOK(In, 1.5)) return { frontY: null, drawnTeeth: 0, alphaSum: 0 };
+    if (!polyOK(In, 1.5)) {
+      return { frontY: null, drawnTeeth: 0, alphaSum: 0, box: null, boxArea: 0, v0: null, v1: null, line: null, inner: null };
+    }
     ctx.save();
     ctx.beginPath();
     In.forEach((q, i) => i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y));
     ctx.closePath();
     ctx.clip();
-    const line = isUp ? fr.upY + openAmt * 0.16 : fr.loY - openAmt * 0.16;
+    /* The crowns have to be drawn *inside* the opening the viewer sees
+       (upY..loY in the mouth frame).  Biting outward from the lip line put
+       the lower arch on the chin and the upper one above the upper lip;
+       both were clipped away, which is why an open mouth showed no teeth.
+       Each arch now covers a slice of the aperture and the two biting edges
+       leave the dark line between them. */
+    const ap = Math.max(fr.loY - fr.upY, fr.mw * 0.02);
+    const line = isUp ? fr.upY + ap * 0.42 : fr.loY - ap * 0.42;
     const crown = fr.mw * (isUp ? 0.30 : 0.26);
     const teeth = [];
     for (let sd = 0; sd < 2; sd++) {
@@ -827,10 +881,11 @@
     }
     /* back teeth first: the arch reads as a curve */
     teeth.sort((a, b) => b.back - a.back);
-    const vis = clamp01(cfg.vis) * clamp01(openAmt * 2.8);
+    const vis = clamp01(cfg.vis) * clamp01(openAmt * 3.6);
     const bright = clamp01((0.62 + S.cache.lum * 0.5) * cfg.bright);
-    let frontY = null, drawnTeeth = 0, alphaSum = 0, box = null;
+    let frontY = null, drawnTeeth = 0, alphaSum = 0, box = null, boxArea = 0;
     const inner = bounds(In);
+    let vv0 = Infinity, vv1 = -Infinity;
     for (const t of teeth) {
       const [A0, B0, C0, D0] = t.q;
       const alpha = clamp01(vis * (1 - Math.min(.5, t.back * 0.32)));
@@ -892,20 +947,29 @@
       ctx.restore();
       if (frontY === null || (isUp ? C0[1] > frontY : C0[1] < frontY)) frontY = C0[1];
       /* what the viewer can actually see: the crown clipped to the opening */
-      const tq = bounds([A0, B0, C0, D0]);
-      const v0 = { x0: Math.max(tq.x0, inner.x0), y0: Math.max(tq.y0, inner.y0),
-                   x1: Math.min(tq.x1, inner.x1), y1: Math.min(tq.y1, inner.y1) };
-      if (v0.x1 > v0.x0 && v0.y1 > v0.y0) {
-        box = box ? { x0: Math.min(box.x0, v0.x0), y0: Math.min(box.y0, v0.y0),
-                      x1: Math.max(box.x1, v0.x1), y1: Math.max(box.y1, v0.y1) } : v0;
+      const vis1 = clipQuad([A0, B0, C0, D0], In);
+      if (vis1.verts) {
+        const v0 = bounds(vis1.verts);
+        boxArea += vis1.area * alpha;
+        if (v0.x1 > v0.x0 && v0.y1 > v0.y0) {
+          box = box ? { x0: Math.min(box.x0, v0.x0), y0: Math.min(box.y0, v0.y0),
+                        x1: Math.max(box.x1, v0.x1), y1: Math.max(box.y1, v0.y1) } : v0;
+        }
       }
       drawnTeeth++;
+      vv0 = Math.min(vv0, t.gumY, t.biteY);
+      vv1 = Math.max(vv1, t.gumY, t.biteY);
     }
     ctx.restore();
-    return { frontY, drawnTeeth, alphaSum, box };
+    return { frontY, drawnTeeth, alphaSum, box, boxArea, v0: isFinite(vv0) ? vv0 : null,
+             v1: isFinite(vv1) ? vv1 : null, line, crown, inner };
   }
 
   function drawCavity(S, ctx, D, h) {
+    /* The interior has to go properly dark as soon as the lips part: at the
+       old 0.86*h, a half-open talking mouth was a 40 % veil over stretched
+       lip pixels, which is exactly what "the lips just stretch" looks like. */
+    const o = clamp01(h * 2.2);
     const a = D[61], b = D[291], up = D[13], lo = D[14];
     const mw = Math.hypot(b.x - a.x, b.y - a.y) || S.head.fw * 0.4;
     const gap = Math.hypot(lo.x - up.x, lo.y - up.y);
@@ -930,13 +994,13 @@
     ctx.quadraticCurveTo(bx, by, a.x, a.y);
     ctx.closePath();
     const g = ctx.createLinearGradient(tx, ty, bx, by);
-    g.addColorStop(0, `rgba(92,28,34,${0.72 * h})`);
-    g.addColorStop(.48, `rgba(25,7,10,${0.86 * h})`);
-    g.addColorStop(1, `rgba(52,14,20,${0.78 * h})`);
+    g.addColorStop(0, `rgba(92,28,34,${0.72 * o})`);
+    g.addColorStop(.48, `rgba(25,7,10,${0.86 * o})`);
+    g.addColorStop(1, `rgba(52,14,20,${0.78 * o})`);
     ctx.fillStyle = g;
     ctx.fill();
     const rg = ctx.createRadialGradient(ocx, ocy, 1, ocx, ocy, Math.max(3, mw * 0.24));
-    rg.addColorStop(0, `rgba(4,1,2,${0.42 * h})`);
+    rg.addColorStop(0, `rgba(4,1,2,${0.42 * o})`);
     rg.addColorStop(1, 'rgba(4,1,2,0)');
     ctx.fillStyle = rg;
     ctx.fill();
@@ -1099,9 +1163,13 @@
       const openAmt = clamp01(h * 1.1);
       const lower = drawArch(S, ctx, fr, D, 'lo', openAmt, st);
       oral.lowerTeeth = lower.drawnTeeth; oral.lowerAlpha = lower.alphaSum; oral.teethBox = lower.box || null;
+      oral.teethArea = lower.boxArea; oral.loBite = lower.line;
       oral.tongue = drawTongue(S, ctx, fr, D, { tongue: st.tongue, gap: gap + mw * 0.035 }, h) === true;
       const upper = drawArch(S, ctx, fr, D, 'up', openAmt, st);
       oral.upperTeeth = upper.drawnTeeth; oral.upperAlpha = upper.alphaSum;
+      oral.teethArea += upper.boxArea; oral.upBite = upper.line;
+      oral.frame = lower.inner ? { upY: fr.upY, loY: fr.loY, lineLo: lower.line, lineUp: upper.line,
+                                   innerY0: lower.inner.y0, innerY1: lower.inner.y1 } : null;
       if (upper.box) oral.teethBox = oral.teethBox
         ? { x0: Math.min(oral.teethBox.x0, upper.box.x0), y0: Math.min(oral.teethBox.y0, upper.box.y0),
             x1: Math.max(oral.teethBox.x1, upper.box.x1), y1: Math.max(oral.teethBox.y1, upper.box.y1) }

@@ -462,7 +462,7 @@ const gazeCase = (preset, axis) => {
 section('mouth interior');
 const outputCtx = dom.byId.get('puppet').getContext('2d');
 const toothVisibility = dom.byId.get('tv');
-toothVisibility.value = '0.4';
+toothVisibility.value = '0.75';                 // the value the panel ships with
 T.preset('Neutral');
 for (let i = 0; i < 35; i++) step1(0.2, 0, 0, 1 / 60, null, true);
 resetOne(outputCtx);
@@ -487,7 +487,79 @@ ok('tongue is rendered through the inner-lip clip', tongueFrame.dbg.mouth.tongue
    `drawn ${tongueFrame.dbg.mouth.tongue}; candidate clips ${outputCtx.ops.filter(op => op.op === 'clip' && op.clip).length}; contained ${tongueClipped}`);
 ok('teeth/tongue outputs stay finite', [tongueFrame.dbg.mouth.h, tongueFrame.dbg.mouth.upperAlpha,
   tongueFrame.dbg.mouth.lowerAlpha, ses.jaw].every(Number.isFinite));
-T.preset('Neutral');
+
+/* The arches have to be *inside* the opening the viewer sees.  Both of them
+   used to be placed outward from the lip line — the lower arch on the chin,
+   the upper one above the upper lip — where the inner-lip clip erased them,
+   and the old bounding-box overlap test still called it visible.  `teethArea`
+   is the opaque area of the crowns actually inside the opening. */
+{
+  /* A neutral rig.  `step1` feeds the tracker, and an unconsumed camera frame
+     leaves the tracked pose (rotated, 0.5x zoomed by earlier sections) in
+     place even with the camera off — which pinches the mouth into a sliver
+     and makes these results meaningless.  Talk at the puppet with the camera
+     off, like a user who has not started the webcam. */
+  const tr = T.state().tracker;
+  const stepOff = (dt = 1 / 60) => { t += dt * 1000; dom.setClock(t); return T.frame(t, dt, true); };
+  const standDown = () => {
+    T.state().camOn = false; T.state().cam = null;
+    tr.trust = 0; tr.q = [0, 0, 0, 1]; tr.qTarget = [0, 0, 0, 1];
+    tr.ox = tr.oy = 0; tr.scale = 1;
+    for (let i = 0; i < 40; i++) stepOff();
+  };
+  standDown();
+  T.preset('Laugh');
+  for (let i = 0; i < 80; i++) stepOff();
+  const f = stepOff();
+  const m = f.dbg.mouth, fr = m.frame, box = m.teethBox;
+  const ap = fr ? fr.innerY1 - fr.innerY0 : 0;
+  const bites = !!fr && fr.lineUp >= fr.upY - 1 && fr.lineLo <= fr.loY + 1;
+  const inside = !!box && !!fr && box.y0 >= fr.innerY0 - 2.5 && box.y1 <= fr.innerY1 + 2.5;
+  const cover = fr && m.mw > 1 ? m.teethArea / (ap * m.mw) : 0;
+  ok('a wide open mouth shows its teeth inside the opening',
+     m.h > 0.4 && inside && bites && ap > 8 && cover > 0.08,
+     `envelope ${m.h.toFixed(2)}, visible teeth ${m.teethArea.toFixed(0)} px² = ${(cover * 100).toFixed(0)}% of a ` +
+     `${ap.toFixed(0)}x${m.mw.toFixed(0)} px opening, ` +
+     `bites ${fr ? `${fr.lineUp.toFixed(0)}/${fr.lineLo.toFixed(0)} vs lips ${fr.innerY0.toFixed(0)}..${fr.innerY1.toFixed(0)}` : 'n/a'}`);
+
+  /* ...and a closed mouth shows none of them, even at full visibility. */
+  T.preset('Neutral');
+  for (let i = 0; i < 70; i++) stepOff();
+  const c = stepOff().dbg.mouth;
+  ok('a closed mouth shows no teeth', c.h < 0.05 && c.teethArea < 12,
+     `envelope ${c.h.toFixed(2)}, visible teeth ${c.teethArea.toFixed(1)} px²`);
+
+  /* Phrases, not a fixed gape: the talking preset has to open, close and
+     keep the teeth in view while it does. */
+  T.preset('Talking');
+  let peak = 0, sum = 0, seen = 0, shut = 0, n = 0;
+  for (let i = 0; i < 300; i++) {
+    const m = stepOff().dbg.mouth;
+    peak = Math.max(peak, m.h); sum += m.h; n++;
+    if (m.teethArea > 25) seen++;
+    if (m.h < 0.15) shut++;
+  }
+  ok('the talking preset speaks: opens, closes, teeth in view',
+     peak > 0.45 && sum / n > 0.12 && seen / n > 0.5 && shut > 8,
+     `peak ${peak.toFixed(2)}, mean ${(sum / n).toFixed(2)}, teeth in view ${(100 * seen / n).toFixed(0)}% of frames, ` +
+     `closed on ${shut} frames`);
+
+  /* Speech speed: a jaw step has to arrive inside a syllable.  At the old
+     3.2/s the jaw needed over a second and every syllable was smeared. */
+  const realTalkAt = FMEngine.talkAt;
+  FMEngine.talkAt = () => ({ j: 1 });
+  T.preset('Talking');
+  let reached = -1;
+  for (let i = 0; i < 60 && reached < 0; i++) {
+    const m = stepOff().dbg.mouth;
+    if (m.h > 0.7) reached = i;
+  }
+  FMEngine.talkAt = realTalkAt;
+  ok('the jaw reaches a full open inside a syllable', reached >= 0 && reached <= 24,
+     reached < 0 ? 'never reached' : `0.7 envelope after ${(reached / 60 * 1000).toFixed(0)} ms`);
+  T.preset('Neutral');
+  for (let i = 0; i < 40; i++) stepOff();
+}
 
 section('interaction');
 const pc = dom.byId.get('puppet'), pcCtx = pc.getContext('2d');

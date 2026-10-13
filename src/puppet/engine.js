@@ -296,19 +296,34 @@
     'Look left': { gx: -1 }, 'Look right': { gx: 1 }, 'Look up': { gy: -1 }, 'Look down': { gy: 1 },
     'Talking': null
   };
-  /* Deterministic pseudo-speech for the preset "Talking" (no audio) */
+  /* Deterministic pseudo-speech for the preset "Talking" (no audio).
+     Speech is syllables in phrases, not a sine: the phrase envelope opens
+     and closes, each syllable picks a vowel height, bilabials (m/b/p) shut
+     the lips for an instant, and the jaw has to move far enough to part the
+     lips — an under-driving jaw is what made this read as a mouth that
+     stretches instead of opens. */
   function talkAt(t) {
     const s = (k, ph) => Math.abs(Math.sin(k * 127.1 + ph) * 43758.5453) % 1;
-    const e = clamp01(Math.sin(t * 0.72) * 3 + 1.15);
-    const g = t * 4.3, k = Math.floor(g), f = g - k;
-    const o = Math.pow(Math.sin(Math.PI * f), 0.7) * e;
+    /* Phrases with short breaths, not 4 s of silence: the mouth should keep
+       moving while the preset is on, with the jaw dipping low between
+       phrases and the bilabials doing the real closures. */
+    const e = clamp01(0.62 + 0.38 * Math.sin(t * 0.85) + 0.12 * Math.sin(t * 2.7 + 1.1));
+    const g = t * 4.1, k = Math.floor(g), f = g - k;      // ~4 syllables/s
+    const o = Math.pow(Math.sin(Math.PI * f), 0.55) * e;
     const h = s(k, 0), h2 = s(k, 3.1);
     const round = h > 0.68;
+    const shut = h2 < 0.20;                               // bilabial (m/b/p)
+    const dental = h2 >= 0.34 && h2 < 0.58;               // tongue at the teeth
+    const jaw = o * (0.30 + 0.55 * h) * (shut ? 0.12 : 1);
     return {
-      j: o * (0.10 + 0.42 * h),                       // jaw open, vowel height
+      j: jaw,                                         // jaw open, vowel height
       pk: round ? o * 0.85 : o * 0.12,                // rounded vowels
-      st: h2 < 0.26 ? o * 0.6 : 0,                    // tongue tip for dentals
-      sL: 0.10 + 0.12 * h, sR: 0.10 + 0.12 * h,       // mouth corners spread
+      /* `tg` is the tongue; `st` is a sideways mouth stretch, so dentals get
+         a tongue flash and only a touch of spread (driving `st` hard was part
+         of why speech looked like the lips were being stretched). */
+      st: shut ? 0 : o * 0.22,
+      tg: !shut && dental ? o * 0.55 : 0,
+      sL: 0.08 + 0.14 * h + jaw * 0.10, sR: 0.08 + 0.14 * h + jaw * 0.10,
       bu: e * 0.10 * h2, ck: 0.2
     };
   }

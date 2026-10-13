@@ -411,7 +411,9 @@
         v = Math.max(v, nz(A.live[k]) * gain);
       }
       A.target[k] = v;
-      A.actions[k] = slew(nz(A.actions[k]), v, dt, 2.2, 1.9);
+      /* 2.2/s meant a click took over a second to reach the pose and speech
+         syllables (4/s) were smeared into a wobble. */
+      A.actions[k] = slew(nz(A.actions[k]), v, dt, 8, 6);
     }
     A.kiss = envelope(A.kiss, clamp01(nz(A.liveKiss) * (live ? 1 : 0)), dt, 14, 10);
     A.tongue = envelope(A.tongue, clamp01(Math.max((live ? nz(A.liveTongue) : 0), nz(A.actions.tg), (chk('forceTongue') || A.keyT) ? 1 : 0)), dt, 16, 9);
@@ -529,7 +531,7 @@
         jawMeshGain: 1,
         limits: chk('lim'), shade: num('fs', 0.35), hairGain: num('hs', 0.6),
         gaze: A.gaze, gazeGain: num('gg', 1.9), lid: A.lid, tongue: A.tongue,
-        vis: num('tv', 0.4), bright: num('tb', 1.15), warmth: num('tw', 0),
+        vis: num('tv', 0.75), bright: num('tb', 1.15), warmth: num('tw', 0),
         showPoints: chk('showPts'), showMesh: chk('showMesh'), origOnly: chk('showOrig'),
         points: A.pointList, dragIndex: A.drag >= 0 ? A.drag : -1, hoverIndex: A.hover >= 0 ? A.hover : -1,
         bodyAt: (A.pose.JI && A.pose.cur && A.pose.neu) ? bodyAt : null
