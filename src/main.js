@@ -109,6 +109,8 @@ let faceSource = null;
 let sourceRevision = 0;
 let cameraFaceWanted = false;
 let cameraFaceFrames = 0;
+let cameraMotionState = 'off';
+let cameraRequest = 0;
 
 // --- Drag wiring ------------------------------------------------------------
 
@@ -200,6 +202,7 @@ function controlWorld(c) {
 
 const tracker = new Tracker({
   onStatus: (msg, kind) => ui.setStatus(msg, kind ?? 'ok'),
+  onEnded: () => stopCamera('Camera disconnected — the image is kept. Reconnect and retry.'),
 });
 
 /** Mic jaw/viseme producer (§5.6) — default OFF, opt-in from the panel. */
@@ -248,8 +251,9 @@ function onDetection(nowMs) {
     const eyeW = Math.hypot(
       tracker.landmarks[LM.eyeAOuter].x - tracker.landmarks[LM.eyeBOuter].x,
       tracker.landmarks[LM.eyeAOuter].y - tracker.landmarks[LM.eyeBOuter].y
-    ) * 640;
-    transformToCanonical(canon, tracker.landmarks, tracker.matrix, 640, 480, eyeW);
+    ) * (tracker.video?.videoWidth || 640);
+    transformToCanonical(canon, tracker.landmarks, tracker.matrix,
+      tracker.video?.videoWidth || 640, tracker.video?.videoHeight || 480, eyeW);
 
     // Neutral geometry profile: EMA while the face is near-neutral.
     const nearNeutral = tracker.weights[CH.jawOpen] < 0.08
@@ -322,7 +326,18 @@ let skeletonOn = false;
 let emotionSolo = null;
 
 ui.cb = {
-  onMirrorToggle: () => startCamera(),
+  onMirrorToggle: () => cameraMotionState === 'starting' || tracker.running ? stopCamera() : startCamera(),
+  onAnimateImage: () => {
+    if (cameraMotionState === 'starting' || tracker.running) { stopCamera(); return; }
+    if (anatomicalHead?.likeness?.kind !== 'image') {
+      ui.setFaceMessage('Choose the face image first, then animate it with your webcam.', true);
+      return;
+    }
+    // Return from a legacy/custom preview to the chosen image, never replace
+    // its identity with the person controlling it in the webcam.
+    if (headAsset !== anatomicalHead) { mirrorMode = false; activateHead(anatomicalHead); }
+    startCamera();
+  },
   onFaceImage: (image) => useFaceImage(image),
   onCameraFace: () => startCamera({ fitFace: true }),
   onClearFace: () => {
@@ -533,6 +548,8 @@ function useFaceImage(image, label) {
 function updateFaceMode() {
   if (!headAsset) return;
   ui.setFaceAvailable(!!anatomicalHead && !!stage.renderer);
+  ui.setCameraMotion(cameraMotionState, anatomicalHead?.likeness?.kind === 'image',
+    headAsset === anatomicalHead && anatomicalHead?.likeness?.kind === 'image');
   if (headAsset.isAnatomical && headAsset.likeness) {
     ui.setFaceMode(headAsset.likeness.kind === 'camera' ? 'Likeness from the captured webcam face'
       : 'Likeness from the current face image', true);
@@ -545,28 +562,78 @@ function updateFaceMode() {
   }
 }
 
+function setCameraMotion(state) {
+  if (cameraMotionState === state) return;
+  cameraMotionState = state;
+  updateFaceMode();
+}
+
+/** Webcam is a motion source. Only the explicit capture action changes identity. */
 async function startCamera({ fitFace = false } = {}) {
-  if (fitFace || (headAsset?.isAnatomical && faceSource?.state.kind !== 'image')) {
+  if (cameraMotionState === 'starting' && !fitFace) return;
+  if (fitFace) {
     sourceRevision++;
     faceSource.cancelPending();
     cameraFaceWanted = true;
     cameraFaceFrames = 0;
-    ui.setFaceMessage('Look straight at the camera with a relaxed face to capture your likeness.');
+    ui.setFaceMessage('Replace likeness: look straight at the camera with a relaxed face.');
   }
-  const video = ui.videoEl();
+  const request = ++cameraRequest;
+  const wasRunning = tracker.running;
+  setCameraMotion('starting');
+  ui.setStatus('Starting webcam motion — allow camera access…', 'ok');
   try {
-    if (!tracker.stream) await tracker.start(video);
+    await tracker.start(ui.videoEl());
+    if (request !== cameraRequest) return;
+    if (!wasRunning) {
+      pose.resetTracking();
+      deadNeutral = null;
+      deadSolver.neutral = null;
+      haveCamGaze = false;
+      rig.wake();
+      idleActive = false;
+    }
+    // An explicit Animate action should not silently do nothing because an
+    // old session left the camera-strength slider at zero.
+    if (rig.camWeight === 0) {
+      rig.camWeight = 1;
+      ui.root.querySelector('#fm-camw').value = '1';
+    }
     ui.setPipVisible(pipVisible);
+    setCameraMotion('waiting');
+    if (!fitFace) ui.setFaceMessage('Webcam controls head turns, mouth, brows and blinks. The image stays the face source.');
+    ui.setStatus('Webcam on — move your face to animate the image', 'ok');
     if (mirrorPatch) mirrorPatch.visible = mirrorMode && !!tracker.stream;
     if (mirrorSkin) mirrorSkin.enabled = mirrorMode;
-    mirrorPatchPending = true; // attach Mirror Skin on first landmarks (§6)
-  } catch {
-    // Graceful: full manual mode (§0.5) — sliders/drag/emotions still work.
-    ui.setStatus('No camera — manual mode (drag + emotions + recording)', 'warn');
-    rig.goIdle();
-    if (cameraFaceWanted) ui.setFaceMessage('Camera unavailable — choose a face image instead.', true);
+    mirrorPatchPending = true;
+  } catch (error) {
+    if (request !== cameraRequest) return;
     cameraFaceWanted = false;
+    setCameraMotion('error');
+    const reason = error?.name === 'NotAllowedError' ? 'Camera permission denied. Allow camera access and retry.'
+      : error?.name === 'NotFoundError' ? 'No webcam found. Connect a camera and retry.'
+        : 'Webcam unavailable: ' + (error?.message ?? String(error));
+    ui.setFaceMessage(reason + ' Your image is kept; manual controls still work.', true);
+    ui.setStatus(reason, 'warn');
+    rig.goIdle();
   }
+}
+
+function stopCamera(message = 'Webcam motion stopped — your image is kept.') {
+  cameraRequest++;
+  cameraFaceWanted = false;
+  cameraFaceFrames = 0;
+  tracker.stop();
+  rig.goIdle();
+  pose.resetTracking();
+  haveCamGaze = false;
+  idleActive = true;
+  if (mirrorPatch) mirrorPatch.visible = false;
+  if (mirrorSkin) mirrorSkin.enabled = false;
+  ui.setPipVisible(false);
+  setCameraMotion('off');
+  ui.setFaceMessage(message);
+  ui.setStatus(message, 'ok');
 }
 
 /** Capture a stable frontal frame ONCE; turning must not re-project its skin. */
@@ -769,18 +836,23 @@ function frame(now) {
 
   const tTrack = performance.now();
   if (fresh && tracker.hasFace) {
-    onDetection(now);
     if (idleActive) {
       rig.wake();
       idleActive = false;
       eyes.saccades.pickTarget();
     }
+    onDetection(now);
+    setCameraMotion('tracking');
     if (mirrorPatchPending && tracker.landmarks.length >= 478) installMirrorPatch();
   } else if (tracker.faceAbsent(now) && !idleActive) {
     rig.goIdle();
+    pose.resetTracking();
     idleActive = true;
     haveCamGaze = false;
-    ui.setStatus('No face — breathing idle (§2)', 'debug');
+    if (tracker.running) {
+      setCameraMotion('waiting');
+      ui.setStatus('Webcam on — face the camera to resume. Image kept.', 'debug');
+    }
   }
   perf.stage.track = performance.now() - tTrack;
 
@@ -800,6 +872,7 @@ function frame(now) {
       headYaw: ypr[0],
       headPitch: ypr[1],
       jawOpen: rig.weightsSource.cam[CH.jawOpen],
+      cameraTracked: tracker.running && tracker.hasFace && !idleActive,
       camBlinkL: rig.weightsSource.camRaw[CH.eyeBlinkLeft],
       camBlinkR: rig.weightsSource.camRaw[CH.eyeBlinkRight],
       camGazeYaw: haveCamGaze && !idleActive ? camGazeYaw : null,
@@ -858,6 +931,7 @@ async function boot() {
     onBusy: (busy) => {
       ui.setFaceBusy(busy);
       if (busy) ui.setStatus('Fitting likeness from the current image (local only)…', 'ok');
+      updateFaceMode();
     },
     onChange: (source) => {
       ui.setFaceReference(source);
@@ -865,7 +939,8 @@ async function boot() {
         mirrorMode = false;
         activateHead(source.asset);
         persistUi();
-        ui.setFaceMessage('Image fitted. Turn the head or animate it — this likeness stays attached.');
+        ui.setFaceMessage(tracker.running ? 'Image fitted — your webcam now moves this face, without changing its identity.'
+          : 'Image ready. Click Animate image with webcam, allow camera access, then move your face.');
         ui.setStatus('Likeness updated from ' + source.label, 'ok');
       } else {
         if (headAsset === source.asset) installDragJacobian(headAsset);
@@ -1014,7 +1089,7 @@ async function boot() {
   // (permission must be a gesture), but also try once at boot for kiosk use.
   mirrorSkin = new MirrorSkin(ui.videoEl());
 
-  ui.setStatus('Ready — drag to turn · Mirror to follow your face', 'ok');
+  ui.setStatus('Ready — choose an image, then animate with webcam', 'ok');
   perf.selfCheck();
   requestAnimationFrame(frame);
 }

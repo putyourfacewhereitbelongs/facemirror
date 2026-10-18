@@ -52,7 +52,7 @@ export class UI {
       <canvas id="${CONFIG.canvasId}"></canvas>
       <div id="fm-privacy" title="Video frames never leave this page">100% local</div>
       <div id="fm-topbar">
-        <button id="fm-mirror" class="fm-big">Mirror (webcam) ⏻</button>
+        <button id="fm-mirror" class="fm-big" aria-pressed="false">Start webcam motion</button>
         <button id="fm-face-image" class="fm-chip" disabled title="Use the current face image for likeness">Face image…</button>
         <input id="fm-face-file" type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" hidden aria-label="Choose the face image to render">
         <button id="fm-skin" class="fm-chip" title="Project your webcam texture onto the head (M)">Mirror Skin</button>
@@ -69,9 +69,11 @@ export class UI {
             <div><div id="fm-face-label">No face image selected</div>
               <div id="fm-face-mode" class="fm-rec-hint">Generic preview — not your likeness</div></div>
           </div>
+          <button id="fm-face-animate" class="fm-big fm-face-animate" disabled aria-pressed="false">Animate image with webcam</button>
+          <div id="fm-face-driver" class="fm-rec-hint" role="status" aria-live="polite">Image = appearance · Webcam = movement</div>
           <div class="fm-row fm-btns">
             <button id="fm-face-choose" class="fm-chip" disabled>Choose image…</button>
-            <button id="fm-face-camera" class="fm-chip" disabled>Use webcam face</button>
+            <button id="fm-face-camera" class="fm-chip" disabled title="Replace the image identity with a webcam snapshot, rather than animate the image">Replace with webcam face</button>
             <button id="fm-face-clear" class="fm-chip" disabled>Clear likeness</button>
           </div>
           <div id="fm-face-message" class="fm-rec-hint" role="status" aria-live="polite">Drop a JPEG, PNG or WebP onto the head. Use one clear, front-facing face.</div>
@@ -238,6 +240,7 @@ export class UI {
       if (file) this.cb.onFaceImage?.(file);
       event.target.value = ''; // selecting the same image again is a new source
     });
+    $('#fm-face-animate').addEventListener('click', () => this.cb.onAnimateImage?.());
     $('#fm-face-camera').addEventListener('click', () => this.cb.onCameraFace?.());
     $('#fm-face-clear').addEventListener('click', () => this.cb.onClearFace?.());
     $('#fm-skin').addEventListener('click', () => this.cb.onMirrorSkin?.());
@@ -383,6 +386,28 @@ export class UI {
       p.textContent = on ? '🔒' : '🔓';
       p.classList.toggle('fm-pinned', on);
     }
+  }
+
+  /** Identity and webcam driver are separate; no video pixels replace the photo. */
+  setCameraMotion(state, imageReady, imageActive = imageReady) {
+    const active = ['starting', 'waiting', 'tracking'].includes(state);
+    const animate = this.root.querySelector('#fm-face-animate');
+    const mirror = this.root.querySelector('#fm-mirror');
+    animate.disabled = !active && (!imageReady || this.root.querySelector('#fm-face-source').getAttribute('aria-busy') === 'true');
+    const activeLabel = state === 'starting' ? 'Cancel webcam start' : active ? 'Stop webcam motion' : null;
+    animate.textContent = activeLabel ?? 'Animate image with webcam';
+    mirror.textContent = activeLabel ?? (imageActive ? 'Animate image with webcam' : 'Start webcam motion');
+    for (const button of [animate, mirror]) {
+      button.setAttribute('aria-pressed', String(active));
+      button.classList.toggle('fm-active', active);
+    }
+    const driver = this.root.querySelector('#fm-face-driver');
+    driver.dataset.state = state;
+    driver.textContent = state === 'tracking' ? 'Motion: live webcam · Turn, smile, talk and blink'
+      : state === 'starting' ? 'Starting camera… the image stays the face source'
+        : state === 'waiting' ? 'Webcam on · Looking for your face — image kept'
+          : state === 'error' ? 'Camera unavailable · Image kept — allow access and retry'
+            : 'Image = appearance · Webcam = movement';
   }
 
   setFaceAvailable(available) {

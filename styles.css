@@ -359,7 +359,8 @@ html, body {
 @media (max-width: 959px) {
   #fm-topbar { top: 56px; width: calc(100vw - 24px); max-width: none; gap: 6px; }
   #fm-topbar .fm-big { padding: 10px 14px; }
-  #fm-panel { padding-top: 150px; }
+  /* Leave room for the longer motion button and wrapped camera status. */
+  #fm-panel { padding-top: 210px; }
   #fm-status { flex-basis: 100%; text-align: center; }
 }
 
@@ -374,3 +375,8 @@ html, body {
 #fm-face-source[data-active="true"] #fm-face-mode { color: var(--accent); }
 #fm-face-message.fm-face-error { color: var(--danger); }
 #fm-face-source .fm-chip { padding: 7px 10px; font-size: 0.78rem; }
+
+.fm-face-animate { width: 100%; margin-top: 12px; padding: 11px 8px; font-size: 0.86rem; }
+.fm-big:disabled { opacity: 0.5; cursor: default; }
+.fm-big.fm-active { border-color: var(--accent); color: var(--accent); }
+#fm-face-driver[data-state="tracking"] { color: var(--accent); }

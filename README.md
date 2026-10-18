@@ -11,8 +11,9 @@ ever depends on a download beyond the app's own pinned assets.
 - **Zero install.** Static site, vanilla ES modules, no build step.
 - **Anatomical by default.** Locally bundled scan-based skin, 3D ears attached
   to the skull, separate eyes, and animated lids. No webcam → full manual mode.
-- **Image-driven likeness.** Choose or drop the active portrait to fit facial
-  proportions, skin texture and iris appearance onto the animated head.
+- **Image-driven likeness, webcam-driven motion.** Choose or drop the active
+  portrait, then animate that person's head turns, expressions and blinks with
+  your webcam. The camera driver does not replace the image identity.
 - **Graceful everywhere.** A custom `head.glb` overrides the built-in head.
   Missing bundled scan → procedural head with closed 3D ears + optional webcam
   "Mirror Skin". Adaptive quality reduces work on slower machines.
@@ -25,8 +26,10 @@ python3 -m http.server 8010
 # or: npx serve
 ```
 
-Open <http://localhost:8010> in Chrome or Edge. Press **Mirror (webcam) ⏻** and
-allow the camera. (Webcam needs http/localhost — not `file://`.)
+Open <http://localhost:8010> in Chrome or Edge. Choose **Face image…**, then
+**Animate image with webcam** and allow camera access. Or use **Start webcam
+motion** to drive the current generic/custom head. Camera access requires HTTPS
+or localhost — not `file://` (an HTTP LAN address is not sufficient).
 
 First load is fully self-contained: three.js, MediaPipe tasks-vision wasm, and
 the 3.7 MB face-landmarker model are vendored under `vendor/` + `assets/`.
@@ -63,8 +66,27 @@ window.dispatchEvent(new CustomEvent('facemirror:face-image', {
 }));
 ```
 
-Webcam motion does not overwrite a chosen image identity. **Use webcam face**
-requests a new, relaxed frontal snapshot instead. **Clear likeness** forgets
+### Animate the selected image with your webcam
+
+1. Choose/drop the face image, or supply the runtime-rendered canvas using the
+   event above. Wait for fitting to finish and check its reference thumbnail.
+2. Click **Animate image with webcam** and allow camera access. Look toward
+   the camera: head turns/tilts, mouth movements, smiles, brows, held eye
+   closures and blinks drive the fitted image head. The thumbnail, photo
+   texture and fitted identity stay attached to the image, not the driver.
+3. **Stop webcam motion** releases the camera and eases back to idle without
+   clearing the photo. Click Animate again to resume. Replacing the image
+   while live immediately transfers motion to the newly selected person.
+
+The source panel distinguishes webcam starting, searching, live and permission
+errors. Lost tracking settles to idle and resumes when your face returns. A
+camera denial/disconnection keeps the image and manual controls usable; allow
+access/reconnect and retry. Camera permission is requested only on an explicit
+start/capture action; choosing an image does not turn on the webcam.
+
+**Replace with webcam face** is deliberately separate: it requests a new,
+relaxed frontal snapshot **instead of the image identity**. Starting webcam
+motion alone never captures/replaces the person. **Clear likeness** forgets
 the fitted person; normal expression reset keeps it. Images, landmarks and
 photo-derived Jacobians are session-only; reloading returns to the generic
 preview. Only an explicit head export saves the image-derived appearance.
@@ -90,6 +112,7 @@ for a production identity/expression rig.
 | `src/emotions.js` | 7 FACS preset vectors + cosine-similarity read-back ("Emotion read-back (local)") |
 | `src/drag.js` | click-drag editing via per-control morph Jacobian solve, undo stack |
 | `src/headAsset.js` | local anatomical asset + GLB loader (ARKit-52 name wiring) + procedural head + Mirror Skin |
+| `src/headMotion.js` | shared identity-preserving expression/morph and eye-bone motion application |
 | `src/anatomy.js`, `src/ears.js`, `src/headShape.js` | scan adaptation, rigid ear masking, closed fallback auricles, shared facial morphs |
 | `src/faceImage.js`, `src/likeness.js`, `src/portraitTexture.js` | local image ingestion, latest-source-wins fitting, morph rebasing and exportable photo atlas |
 | `src/renderer.js` | three.js scene, studio lighting, cheap-SSS skin patch, tone mapping |
@@ -146,8 +169,9 @@ points); edits pin 🔒 so the camera stops overriding them.
 node --test src/tests/     # pure-math suites + headless FakeDetector smoke
 ```
 
-114 tests across image-source validation, pose-normalized identity fitting,
-texture baking, source replacement/cancellation, ear rigidity, anatomical
+129 tests across camera start/stop/cancellation/retry, sustained live blinks,
+image-preserving motion transfer, image-source validation, pose-normalized
+identity fitting, texture baking, source replacement/cancellation, ear rigidity, anatomical
 geometry and near/far-ear occlusion, One-Euro
 lag/jitter, spring stability, blink-scheduler statistics (2-minute sim), saccade main sequence, emotion classification
 (contempt ≠ joy), symmetrize, Jacobian-solver convergence, stabilizeBlink,
@@ -158,7 +182,10 @@ DOM.
 
 ## Manual checklist (2 minutes, in the browser)
 
-1. **Mirror on** → talk, nod, smile: avatar follows, no jitter, no frozen lids.
+1. **Choose image → Animate image with webcam** → talk, nod, smile, blink
+   and hold eyes closed: the image's person follows, without replacing the
+   reference/texture with the webcam user. Stop/resume keeps the same image;
+   denying camera access offers retry and leaves manual controls working.
 2. **Look 45° away**: tracking holds (up to ~80°).
 3. **Cover the camera 3 s**: settles into breathing idle + occasional blinks —
    not a frozen stare. Uncover: snaps back to live.

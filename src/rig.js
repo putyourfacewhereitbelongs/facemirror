@@ -234,8 +234,8 @@ export class Rig {
   /**
    * Feed one camera detection (new frames only) into the cam producer.
    * Runs the §5.1 mapping: normalize → symmetrize → gain.
-   * eyeBlink channels are deliberately NOT written here — camera blinks
-   * inject into the blink scheduler instead (trap §11.4).
+   * eyeBlink channels are deliberately NOT written here — live camera lids
+   * and idle/scheduled blinks are resolved by EyeSolver, then feedEyes.
    *
    * @param {Float32Array|number[]} raw 52 raw MediaPipe scores (ARKit order)
    */
@@ -309,6 +309,8 @@ export class Rig {
   goIdle() {
     this.idleBlend = 1;
     for (let i = 0; i < this.n; i++) this._settle[i] = this.weights[i];
+    this.weightsSource.cam.fill(0);
+    this.weightsSource.camRaw.fill(0);
   }
 
   /** Back to live tracking. */
