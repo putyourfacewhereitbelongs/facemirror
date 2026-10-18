@@ -19,13 +19,14 @@ import { PoseTracker } from './pose.js';
 import { EmotionController, EmotionReadback, EMOTION_LABELS } from './emotions.js';
 import { DragController, CONTROLS, computeJacobian, makeJacobian, assetHash } from './drag.js';
 import {
-  loadGlbHead, buildProceduralHead, MirrorSkin, buildMirrorPatch,
+  loadGlbHead, loadAnatomicalHead, buildProceduralHead, MirrorSkin, buildMirrorPatch,
   proceduralMorphDelta, CONFIG as HEAD_CONFIG,
 } from './headAsset.js';
 import { Stage } from './renderer.js';
 import { Recorder, buildClipGlb } from './recorder.js';
 import { PerfGovernor } from './perf.js';
 import { UI } from './ui.js';
+import { FaceImageSource } from './faceImage.js';
 import * as THREE from 'three';
 
 /** @type {Record<string, string>} */
@@ -101,7 +102,15 @@ let stage = null;
 let headAsset = null;
 let mirrorSkin = null;
 let mirrorPatch = null;
-let mirrorMode = true;
+let mirrorMode = false;
+let proceduralHead = null;
+let anatomicalHead = null;
+let faceSource = null;
+let sourceRevision = 0;
+let cameraFaceWanted = false;
+let cameraFaceFrames = 0;
+let cameraMotionState = 'off';
+let cameraRequest = 0;
 
 // --- Drag wiring ------------------------------------------------------------
 
@@ -112,7 +121,9 @@ const drag = new DragController({
   ghostTarget: (control, visible) => {
     if (stage && stage.renderer) {
       // Ghost target: small emissive marker over the control point.
-      ghost.visible = visible;
+      // Whole-head turns have no feature target. Leaving this at the
+      // origin made a green marker appear inside the ear in profile.
+      ghost.visible = visible && control >= 0;
       if (visible && control >= 0 && headAsset) {
         const p = controlWorld(control);
         ghost.position.copy(p);
@@ -181,7 +192,8 @@ const CONTROL_ANCHORS = [
  */
 function controlWorld(c) {
   const a = CONTROL_ANCHORS[c] ?? [0, 0, 0];
-  const v = new THREE.Vector3(a[0], a[1], a[2]);
+  const fitted = headAsset?.fitPoint ? headAsset.fitPoint(...a, new Float64Array(3)) : a;
+  const v = new THREE.Vector3(...fitted);
   stage.headNode.localToWorld(v);
   return v;
 }
@@ -190,6 +202,7 @@ function controlWorld(c) {
 
 const tracker = new Tracker({
   onStatus: (msg, kind) => ui.setStatus(msg, kind ?? 'ok'),
+  onEnded: () => stopCamera('Camera disconnected — the image is kept. Reconnect and retry.'),
 });
 
 /** Mic jaw/viseme producer (§5.6) — default OFF, opt-in from the panel. */
@@ -231,14 +244,16 @@ function onDetection(nowMs) {
   rig.feedCamera(tracker.weights);
   pose.setFromMatrix(tracker.matrix, nowMs / 1000);
   pose.getYawPitchRoll(ypr);
+  maybeCaptureCameraFace();
 
   if (tracker.landmarks.length >= 478) {
     // Pose-removal FIRST (trap §11.5): canonical space, then geometry.
     const eyeW = Math.hypot(
       tracker.landmarks[LM.eyeAOuter].x - tracker.landmarks[LM.eyeBOuter].x,
       tracker.landmarks[LM.eyeAOuter].y - tracker.landmarks[LM.eyeBOuter].y
-    ) * 640;
-    transformToCanonical(canon, tracker.landmarks, tracker.matrix, 640, 480, eyeW);
+    ) * (tracker.video?.videoWidth || 640);
+    transformToCanonical(canon, tracker.landmarks, tracker.matrix,
+      tracker.video?.videoWidth || 640, tracker.video?.videoHeight || 480, eyeW);
 
     // Neutral geometry profile: EMA while the face is near-neutral.
     const nearNeutral = tracker.weights[CH.jawOpen] < 0.08
@@ -311,13 +326,43 @@ let skeletonOn = false;
 let emotionSolo = null;
 
 ui.cb = {
-  onMirrorToggle: () => startCamera(),
+  onMirrorToggle: () => cameraMotionState === 'starting' || tracker.running ? stopCamera() : startCamera(),
+  onAnimateImage: () => {
+    if (cameraMotionState === 'starting' || tracker.running) { stopCamera(); return; }
+    if (anatomicalHead?.likeness?.kind !== 'image') {
+      ui.setFaceMessage('Choose the face image first, then animate it with your webcam.', true);
+      return;
+    }
+    // Return from a legacy/custom preview to the chosen image, never replace
+    // its identity with the person controlling it in the webcam.
+    if (headAsset !== anatomicalHead) { mirrorMode = false; activateHead(anatomicalHead); }
+    startCamera();
+  },
+  onFaceImage: (image) => useFaceImage(image),
+  onCameraFace: () => startCamera({ fitFace: true }),
+  onClearFace: () => {
+    sourceRevision++;
+    cameraFaceWanted = false;
+    cameraFaceFrames = 0;
+    faceSource?.clear();
+  },
   onMirrorSkin: () => {
+    if (!headAsset?.isProcedural && !headAsset?.isAnatomical) {
+      ui.setStatus('Custom heads keep their authored skin; webcam motion still works', 'ok');
+      return;
+    }
     mirrorMode = !mirrorMode;
+    // Preserve the original webcam-texture feature without pasting a flat
+    // camera patch over the scan (or its ears) during a head turn.
+    if (mirrorMode && headAsset.isAnatomical) activateHead(proceduralHead);
+    else if (!mirrorMode && headAsset === proceduralHead && anatomicalHead) activateHead(anatomicalHead);
+    else installMirrorPatch();
     if (mirrorPatch) mirrorPatch.visible = mirrorMode && !!tracker.stream;
     if (mirrorSkin) mirrorSkin.enabled = mirrorMode;
     ui.setMirrorSkin(mirrorMode);
-    ui.setStatus(mirrorMode ? 'Mirror Skin on' : 'Mirror Skin off', 'ok');
+    ui.setStatus(mirrorMode ? 'Mirror Skin — webcam-textured procedural head'
+      : headAsset.isAnatomical ? 'Anatomical skin on' : 'Mirror Skin off', 'ok');
+    persistUi();
   },
   onFullscreen: () => {
     if (document.fullscreenElement) document.exitFullscreen();
@@ -490,21 +535,120 @@ async function exportClip(kind) {
   }
 }
 
-// --- Camera / GLB drop ------------------------------------------------------
+// --- Active face image / camera / GLB drop ----------------------------------
 
-async function startCamera() {
-  const video = ui.videoEl();
+/** One entry point for file input, portrait drop, or another rendered canvas. */
+function useFaceImage(image, label) {
+  sourceRevision++;
+  cameraFaceWanted = false;
+  cameraFaceFrames = 0;
+  return faceSource.setImage(image, { kind: 'image', label: label || image?.name || 'Current rendered face' });
+}
+
+function updateFaceMode() {
+  if (!headAsset) return;
+  ui.setFaceAvailable(!!anatomicalHead && !!stage.renderer);
+  ui.setCameraMotion(cameraMotionState, anatomicalHead?.likeness?.kind === 'image',
+    headAsset === anatomicalHead && anatomicalHead?.likeness?.kind === 'image');
+  if (headAsset.isAnatomical && headAsset.likeness) {
+    ui.setFaceMode(headAsset.likeness.kind === 'camera' ? 'Likeness from the captured webcam face'
+      : 'Likeness from the current face image', true);
+  } else if (headAsset.isProcedural && mirrorMode) {
+    ui.setFaceMode('Legacy webcam projection — saved image likeness is paused', false);
+  } else if (!headAsset.isAnatomical && !headAsset.isProcedural) {
+    ui.setFaceMode('Custom GLB — using its authored appearance', false);
+  } else {
+    ui.setFaceMode('Generic preview — choose the face image to render', false);
+  }
+}
+
+function setCameraMotion(state) {
+  if (cameraMotionState === state) return;
+  cameraMotionState = state;
+  updateFaceMode();
+}
+
+/** Webcam is a motion source. Only the explicit capture action changes identity. */
+async function startCamera({ fitFace = false } = {}) {
+  if (cameraMotionState === 'starting' && !fitFace) return;
+  if (fitFace) {
+    sourceRevision++;
+    faceSource.cancelPending();
+    cameraFaceWanted = true;
+    cameraFaceFrames = 0;
+    ui.setFaceMessage('Replace likeness: look straight at the camera with a relaxed face.');
+  }
+  const request = ++cameraRequest;
+  const wasRunning = tracker.running;
+  setCameraMotion('starting');
+  ui.setStatus('Starting webcam motion — allow camera access…', 'ok');
   try {
-    await tracker.start(video);
+    await tracker.start(ui.videoEl());
+    if (request !== cameraRequest) return;
+    if (!wasRunning) {
+      pose.resetTracking();
+      deadNeutral = null;
+      deadSolver.neutral = null;
+      haveCamGaze = false;
+      rig.wake();
+      idleActive = false;
+    }
+    // An explicit Animate action should not silently do nothing because an
+    // old session left the camera-strength slider at zero.
+    if (rig.camWeight === 0) {
+      rig.camWeight = 1;
+      ui.root.querySelector('#fm-camw').value = '1';
+    }
     ui.setPipVisible(pipVisible);
-    if (mirrorPatch) mirrorPatch.visible = mirrorMode;
+    setCameraMotion('waiting');
+    if (!fitFace) ui.setFaceMessage('Webcam controls head turns, mouth, brows and blinks. The image stays the face source.');
+    ui.setStatus('Webcam on — move your face to animate the image', 'ok');
+    if (mirrorPatch) mirrorPatch.visible = mirrorMode && !!tracker.stream;
     if (mirrorSkin) mirrorSkin.enabled = mirrorMode;
-    mirrorPatchPending = true; // attach Mirror Skin on first landmarks (§6)
-  } catch {
-    // Graceful: full manual mode (§0.5) — sliders/drag/emotions still work.
-    ui.setStatus('No camera — manual mode (drag + emotions + recording)', 'warn');
+    mirrorPatchPending = true;
+  } catch (error) {
+    if (request !== cameraRequest) return;
+    cameraFaceWanted = false;
+    setCameraMotion('error');
+    const reason = error?.name === 'NotAllowedError' ? 'Camera permission denied. Allow camera access and retry.'
+      : error?.name === 'NotFoundError' ? 'No webcam found. Connect a camera and retry.'
+        : 'Webcam unavailable: ' + (error?.message ?? String(error));
+    ui.setFaceMessage(reason + ' Your image is kept; manual controls still work.', true);
+    ui.setStatus(reason, 'warn');
     rig.goIdle();
   }
+}
+
+function stopCamera(message = 'Webcam motion stopped — your image is kept.') {
+  cameraRequest++;
+  cameraFaceWanted = false;
+  cameraFaceFrames = 0;
+  tracker.stop();
+  rig.goIdle();
+  pose.resetTracking();
+  haveCamGaze = false;
+  idleActive = true;
+  if (mirrorPatch) mirrorPatch.visible = false;
+  if (mirrorSkin) mirrorSkin.enabled = false;
+  ui.setPipVisible(false);
+  setCameraMotion('off');
+  ui.setFaceMessage(message);
+  ui.setStatus(message, 'ok');
+}
+
+/** Capture a stable frontal frame ONCE; turning must not re-project its skin. */
+function maybeCaptureCameraFace() {
+  if (!cameraFaceWanted || !tracker.stream || tracker.fake || !anatomicalHead) return;
+  const w = tracker.weights;
+  const neutral = Math.abs(ypr[0]) < 0.20 && Math.abs(ypr[1]) < 0.18
+    && w[CH.eyeBlinkLeft] < 0.25 && w[CH.eyeBlinkRight] < 0.25
+    && w[CH.jawOpen] < 0.22 && w[CH.mouthSmileLeft] < 0.35 && w[CH.mouthSmileRight] < 0.35;
+  cameraFaceFrames = neutral ? cameraFaceFrames + 1 : 0;
+  if (cameraFaceFrames < 3 || tracker.landmarks.length < 478 || tracker.video.readyState < 2) return;
+  cameraFaceWanted = false;
+  faceSource.setImage(tracker.video, {
+    kind: 'camera', label: 'Webcam face snapshot', landmarks: tracker.landmarks, matrix: tracker.matrix,
+  });
 }
 
 let mirrorPatchPending = false;
@@ -514,25 +658,44 @@ let mirrorPatchPending = false;
  * @param {ArrayBuffer} buffer
  */
 async function installHead(buffer) {
+  const revision = ++sourceRevision;
+  faceSource?.cancelPending();
+  cameraFaceWanted = false;
   try {
     const asset = await loadGlbHead(buffer);
-    stage.setHead(asset);
-    headAsset = asset;
-    rig.hasTeeth = asset.hasTeeth || asset.hasTongue;
+    if (revision !== sourceRevision) return;
+    mirrorMode = false;
+    activateHead(asset);
     for (const w of asset.warnings) console.warn('[head]', w);
     ui.setStatus(`GLB head loaded (${asset.missingChannels.length} channels missing)`, 'ok');
-    installMirrorPatch();
-    installDragJacobian(asset);
   } catch (err) {
     ui.setStatus('GLB load failed: ' + err, 'error');
   }
 }
 
+function activateHead(asset) {
+  stage.setHead(asset);
+  headAsset = asset;
+  rig.hasTeeth = asset.hasTeeth || asset.hasTongue;
+  ui.setMirrorSkinAvailable(asset.isProcedural || asset.isAnatomical, asset.isAnatomical);
+  ui.setMirrorSkin(mirrorMode && asset.isProcedural);
+  installMirrorPatch();
+  installDragJacobian(asset);
+  updateFaceMode();
+}
+
 function installMirrorPatch() {
-  if (!headAsset || !tracker.landmarks.length) return;
   if (mirrorPatch) {
-    stage.headNode.remove(mirrorPatch);
+    mirrorPatch.removeFromParent();
+    mirrorPatch.geometry.dispose();
+    mirrorPatch.material.dispose();
     mirrorPatch = null;
+  }
+  // Face landmarks do not include ears. Never paste a front-facing webcam
+  // plane over the anatomical head, especially during a profile turn.
+  if (!headAsset?.isProcedural || !mirrorMode || tracker.landmarks.length < 478) {
+    mirrorPatchPending = false;
+    return;
   }
   if (!mirrorSkin && tracker.video) mirrorSkin = new MirrorSkin(tracker.video);
   const geo = buildMirrorPatch(tracker.landmarks);
@@ -543,7 +706,7 @@ function installMirrorPatch() {
     envMapIntensity: 0.65,
   });
   mirrorPatch = new THREE.Mesh(geo, mat);
-  mirrorPatch.visible = mirrorMode;
+  mirrorPatch.visible = mirrorMode && !!tracker.stream;
   headAsset.root.add(mirrorPatch);
   mirrorPatchPending = false;
 }
@@ -556,7 +719,10 @@ function installMirrorPatch() {
  */
 function installDragJacobian(asset) {
   const hash = assetHash(asset.hash + ':' + CONTROLS.length);
-  const cached = localStorage.getItem('facemirror.jacobian.' + hash);
+  let cached = null;
+  // Photo-derived geometry/features are session-only, including its Jacobian.
+  try { if (!asset.likeness) cached = localStorage.getItem('facemirror.jacobian.' + hash); }
+  catch { /* private mode */ }
   if (cached) {
     try {
       const arr = Float32Array.from(JSON.parse(cached));
@@ -573,8 +739,9 @@ function installDragJacobian(asset) {
   const posAttr = mesh?.geometry?.attributes?.position;
   const morphAttrs = mesh?.geometry?.morphAttributes?.position ?? [];
 
-  // Precompute the mesh vertex nearest each control anchor (GLB path).
-  const nearest = CONTROL_ANCHORS.map((a) => {
+  const anchors = CONTROL_ANCHORS.map((a) => asset.fitPoint ? Array.from(asset.fitPoint(...a, new Float64Array(3))) : a);
+  // Precompute the mesh vertex nearest each fitted control anchor (GLB path).
+  const nearest = anchors.map((a) => {
     if (!posAttr) return -1;
     let best = 0;
     let bestD = Infinity;
@@ -590,7 +757,7 @@ function installDragJacobian(asset) {
 
   computeJacobian(J, 52, (w, out) => {
     for (let c = 0; c < CONTROLS.length; c++) {
-      const a = CONTROL_ANCHORS[c];
+      const a = anchors[c];
       if (asset.isProcedural || !posAttr) {
         const d = new Float32Array(3);
         out[c * 3] = a[0];
@@ -634,7 +801,7 @@ function installDragJacobian(asset) {
   });
   drag.setJacobian(J);
   try {
-    localStorage.setItem('facemirror.jacobian.' + hash, JSON.stringify(Array.from(J)));
+    if (!asset.likeness) localStorage.setItem('facemirror.jacobian.' + hash, JSON.stringify(Array.from(J)));
   } catch {
     /* cache optional */
   }
@@ -669,18 +836,23 @@ function frame(now) {
 
   const tTrack = performance.now();
   if (fresh && tracker.hasFace) {
-    onDetection(now);
     if (idleActive) {
       rig.wake();
       idleActive = false;
       eyes.saccades.pickTarget();
     }
+    onDetection(now);
+    setCameraMotion('tracking');
     if (mirrorPatchPending && tracker.landmarks.length >= 478) installMirrorPatch();
   } else if (tracker.faceAbsent(now) && !idleActive) {
     rig.goIdle();
+    pose.resetTracking();
     idleActive = true;
     haveCamGaze = false;
-    ui.setStatus('No face — breathing idle (§2)', 'debug');
+    if (tracker.running) {
+      setCameraMotion('waiting');
+      ui.setStatus('Webcam on — face the camera to resume. Image kept.', 'debug');
+    }
   }
   perf.stage.track = performance.now() - tTrack;
 
@@ -700,6 +872,7 @@ function frame(now) {
       headYaw: ypr[0],
       headPitch: ypr[1],
       jawOpen: rig.weightsSource.cam[CH.jawOpen],
+      cameraTracked: tracker.running && tracker.hasFace && !idleActive,
       camBlinkL: rig.weightsSource.camRaw[CH.eyeBlinkLeft],
       camBlinkR: rig.weightsSource.camRaw[CH.eyeBlinkRight],
       camGazeYaw: haveCamGaze && !idleActive ? camGazeYaw : null,
@@ -752,12 +925,50 @@ const ypr4 = new Float32Array(4);
 async function boot() {
   ui.mount();
   stage = new Stage(/** @type {HTMLCanvasElement} */ (ui.root.querySelector('#fm-canvas')));
+  faceSource = new FaceImageSource({
+    getAsset: () => anatomicalHead,
+    captureReference: (asset) => stage.captureNeutralHead(asset),
+    onBusy: (busy) => {
+      ui.setFaceBusy(busy);
+      if (busy) ui.setStatus('Fitting likeness from the current image (local only)…', 'ok');
+      updateFaceMode();
+    },
+    onChange: (source) => {
+      ui.setFaceReference(source);
+      if (source.canvas) {
+        mirrorMode = false;
+        activateHead(source.asset);
+        persistUi();
+        ui.setFaceMessage(tracker.running ? 'Image fitted — your webcam now moves this face, without changing its identity.'
+          : 'Image ready. Click Animate image with webcam, allow camera access, then move your face.');
+        ui.setStatus('Likeness updated from ' + source.label, 'ok');
+      } else {
+        if (headAsset === source.asset) installDragJacobian(headAsset);
+        updateFaceMode();
+        ui.setFaceMessage('Likeness cleared. Choose the next face image; expression controls stay available.');
+        ui.setStatus('Image likeness cleared', 'ok');
+      }
+    },
+    onError: (error) => {
+      ui.setFaceMessage(error.message + '. Current face kept unchanged.', true);
+      ui.setStatus('Likeness not changed: ' + error.message, 'warn');
+    },
+  });
+  // Other in-page renderers can pass their current image/canvas through the
+  // very same path as file input. Never sample our own animated output back
+  // into identity: that would bake expressions and drift toward the template.
+  window.addEventListener('facemirror:face-image', (event) => {
+    if (event.detail?.image) useFaceImage(event.detail.image, event.detail.label);
+  });
   const resize = () => {
     const c = stage.canvas;
     c.width = window.innerWidth;
     c.height = window.innerHeight;
-    stage.resize(window.innerWidth, window.innerHeight);
+    const panel = ui.root.querySelector('#fm-panel');
+    const covered = window.innerWidth >= 960 && !panel.classList.contains('fm-collapsed') ? panel.offsetWidth : 0;
+    stage.resize(window.innerWidth, window.innerHeight, covered);
   };
+  ui.cb.onLayout = resize;
   window.addEventListener('resize', resize);
   resize();
 
@@ -771,10 +982,20 @@ async function boot() {
 
   // Procedural head first — the app must work with zero assets (§6).
   const proc = buildProceduralHead();
+  proceduralHead = proc;
   stage.setHead(proc);
   headAsset = proc;
   rig.hasTeeth = true;
-  installDragJacobian(proc);
+  // Full 3D ear anatomy + photographic skin, with a zero-asset fallback.
+  try {
+    const anatomical = await loadAnatomicalHead();
+    anatomicalHead = anatomical;
+    stage.setHead(anatomical);
+    headAsset = anatomical;
+    rig.hasTeeth = anatomical.hasTeeth || anatomical.hasTongue;
+  } catch (err) {
+    console.warn('[head] Anatomical asset unavailable; keeping procedural head', err);
+  }
 
   // Restore calibration + settings.
   const cal = CalibrationSession.load();
@@ -790,6 +1011,7 @@ async function boot() {
   if (st.headLag !== undefined) pose.neckLagSec = st.headLag;
   if (st.toggles) Object.assign(eyes.toggles, st.toggles);
   if (st.mirrorMode !== undefined) mirrorMode = st.mirrorMode;
+  activateHead(mirrorMode ? proceduralHead : headAsset);
 
   // Drag + wheel/pinch dolly + GLB drop onto the canvas.
   const canvas = stage.canvas;
@@ -797,7 +1019,7 @@ async function boot() {
   const pointers = new Map();
   let pinchStart = 0;
   const applyDolly = () => {
-    stage.camera.position.z = 2.35 * drag.dolly;
+    stage.setDolly(drag.dolly);
   };
   canvas.addEventListener('pointerdown', (e) => {
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -842,16 +1064,22 @@ async function boot() {
   canvas.addEventListener('drop', async (e) => {
     e.preventDefault();
     const file = e.dataTransfer?.files?.[0];
-    if (file) installHead(await file.arrayBuffer());
+    if (!file) return;
+    if (/\.glb$/i.test(file.name) || file.type === 'model/gltf-binary') {
+      await installHead(await file.arrayBuffer());
+    } else {
+      await useFaceImage(file);
+    }
   });
 
-  // Auto-load assets/head.glb when present (optional drop-in — §1/assets).
+  // Auto-load assets/head.glb only if the user hasn't chosen another source.
+  const probeRevision = sourceRevision;
   try {
     const res = await fetch('./assets/head.glb', { method: 'GET' });
     const ct = res.headers.get('content-type') ?? '';
-    if (res.ok && !ct.includes('text/html')) {
-      installHead(await res.arrayBuffer());
-      ui.setStatus('assets/head.glb loaded', 'ok');
+    if (res.ok && !ct.includes('text/html') && sourceRevision === probeRevision) {
+      const buffer = await res.arrayBuffer();
+      if (sourceRevision === probeRevision) await installHead(buffer);
     }
   } catch {
     /* no drop-in head — procedural stays */
@@ -861,7 +1089,7 @@ async function boot() {
   // (permission must be a gesture), but also try once at boot for kiosk use.
   mirrorSkin = new MirrorSkin(ui.videoEl());
 
-  ui.setStatus('Ready — press Mirror or drop a head.glb on the canvas', 'ok');
+  ui.setStatus('Ready — choose an image, then animate with webcam', 'ok');
   perf.selfCheck();
   requestAnimationFrame(frame);
 }

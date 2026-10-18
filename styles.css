@@ -352,3 +352,31 @@ html, body {
   background: var(--border);
   border-radius: 8px;
 }
+
+/* Keep the complete portrait visible on narrow displays; controls are opt-in. */
+.fm-chip:disabled { opacity: 0.5; cursor: default; }
+.fm-rec-hint a { color: var(--accent); }
+@media (max-width: 959px) {
+  #fm-topbar { top: 56px; width: calc(100vw - 24px); max-width: none; gap: 6px; }
+  #fm-topbar .fm-big { padding: 10px 14px; }
+  /* Leave room for the longer motion button and wrapped camera status. */
+  #fm-panel { padding-top: 210px; }
+  #fm-status { flex-basis: 100%; text-align: center; }
+}
+
+/* The source image stays visible next to the identity controls. */
+.fm-face-reference { display: flex; gap: 10px; align-items: center; min-height: 38px; }
+#fm-face-preview { flex: 0 0 72px; width: 72px; height: 84px; border-radius: 8px; border: 1px solid var(--border); }
+#fm-face-preview[hidden] { display: none; }
+#fm-face-label { font-size: 0.86rem; overflow-wrap: anywhere; }
+#fm-face-mode { line-height: 1.5; }
+#fm-face-source .fm-rec-hint { line-height: 1.5; }
+#fm-face-source[aria-busy="true"] { border-color: var(--accent); }
+#fm-face-source[data-active="true"] #fm-face-mode { color: var(--accent); }
+#fm-face-message.fm-face-error { color: var(--danger); }
+#fm-face-source .fm-chip { padding: 7px 10px; font-size: 0.78rem; }
+
+.fm-face-animate { width: 100%; margin-top: 12px; padding: 11px 8px; font-size: 0.86rem; }
+.fm-big:disabled { opacity: 0.5; cursor: default; }
+.fm-big.fm-active { border-color: var(--accent); color: var(--accent); }
+#fm-face-driver[data-state="tracking"] { color: var(--accent); }

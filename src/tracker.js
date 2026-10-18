@@ -12,10 +12,10 @@ import { CHANNELS, CH } from './rig.js';
 /** @type {Record<string, any>} */
 export const CONFIG = {
   // Local-first for offline (§0.4); CDN only as fallback (§0.3 pins).
-  visionModule: './vendor/tasks-vision/vision_bundle.mjs',
+  visionModule: new URL('../vendor/tasks-vision/vision_bundle.mjs', import.meta.url).href,
   visionModuleCdn: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.0/vision_bundle.mjs',
-  wasmLocal: './vendor/tasks-vision/wasm',
-  modelLocal: './assets/face_landmarker.task',
+  wasmLocal: new URL('../vendor/tasks-vision/wasm', import.meta.url).href,
+  modelLocal: new URL('../assets/face_landmarker.task', import.meta.url).href,
   modelCdn: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
   constraints: {
     audio: false,
@@ -284,7 +284,18 @@ export class Tracker {
    * @param {object} deps
    * @param {(status: string, kind?: string) => void} deps.onStatus UI feedback
    */
-  constructor({ onStatus }) {
+  constructor({ onStatus, onEnded, requestStream } = {}) {
+    this.onEnded = onEnded ?? (() => {});
+    this.requestStream = requestStream ?? ((constraints) => {
+      if (!globalThis.navigator?.mediaDevices?.getUserMedia) {
+        throw new Error('Camera access needs HTTPS (or localhost) and a supported browser');
+      }
+      return navigator.mediaDevices.getUserMedia(constraints);
+    });
+    this._cameraEpoch = 0;
+    this._startEpoch = 0;
+    this._startPromise = null;
+    this.running = false;
     this.onStatus = onStatus ?? (() => {});
     this.video = null;
     this.stream = null;
@@ -307,6 +318,7 @@ export class Tracker {
     this.fake = null;
     if (typeof window !== 'undefined' && window.__FACEMIRROR_FAKE) {
       this.fake = new FakeDetector(String(window.__FACEMIRROR_FAKE));
+      this.running = true;
       this.onStatus('FakeDetector: ' + window.__FACEMIRROR_FAKE, 'debug');
     }
     this.categoryIndex = null;
@@ -364,39 +376,91 @@ export class Tracker {
     }
   }
 
-  /**
-   * Start the camera.
-   * @param {HTMLVideoElement} video
-   */
-  async start(video) {
+  /** Start motion capture once. Request permission inside the user gesture. */
+  start(video) {
+    if (this._startPromise) {
+      if (this._startEpoch === this._cameraEpoch) return this._startPromise;
+      // A stopped permission/model request must finish disposing before a
+      // restart can own the detector. Never resurrect its obsolete stream.
+      return this._startPromise.catch(() => {}).then(() => this.start(video));
+    }
+    if (this.running && (this.fake || this.stream?.getVideoTracks().some((t) => t.readyState === 'live'))) return Promise.resolve();
+    const epoch = ++this._cameraEpoch;
+    this._startEpoch = epoch;
+    const pending = this._openCamera(video, epoch);
+    this._startPromise = pending;
+    const clear = () => { if (this._startPromise === pending) this._startPromise = null; };
+    pending.then(clear, clear);
+    return pending;
+  }
+
+  async _openCamera(video, epoch) {
+    this.running = false;
     this.video = video;
-    if (!this.fake) {
-      await this.initLandmarker();
-      try {
-        this.stream = await navigator.mediaDevices.getUserMedia(CONFIG.constraints);
-      } catch (err) {
-        this.onStatus('Camera unavailable: ' + (err && err.name ? err.name : err) + ' — manual mode', 'error');
-        throw err;
+    const cancelled = () => new DOMException('Webcam start cancelled', 'AbortError');
+    try {
+      if (this.fake) {
+        this.running = true;
+        this.onStatus('FakeDetector active — camera bypassed', 'debug');
+        return;
       }
-      video.srcObject = this.stream;
+      // Permission comes first; a slow WASM/model load must not consume the
+      // browser's user activation before getUserMedia is requested.
+      const stream = await this.requestStream(CONFIG.constraints);
+      if (epoch !== this._cameraEpoch) {
+        for (const track of stream.getTracks()) track.stop();
+        throw cancelled();
+      }
+      this.stream = stream;
+      video.srcObject = stream;
       await video.play();
-      this.onStatus('Camera live', 'ok');
-    } else {
-      this.onStatus('FakeDetector active — camera bypassed', 'debug');
+      if (epoch !== this._cameraEpoch) throw cancelled();
+      await this.initLandmarker();
+      if (epoch !== this._cameraEpoch) throw cancelled();
+      if (!stream.getVideoTracks().some((track) => track.readyState === 'live')) {
+        throw new Error('Camera disconnected while starting. Reconnect and retry.');
+      }
+      this.running = true;
+      for (const track of stream.getVideoTracks()) {
+        track.addEventListener?.('ended', () => {
+          if (this.stream !== stream) return;
+          this.stop();
+          this.onEnded();
+        }, { once: true });
+      }
+      this.onStatus('Webcam motion on', 'ok');
+    } catch (error) {
+      const wasCancelled = epoch !== this._cameraEpoch;
+      if (!wasCancelled) this.stop();
+      else if (this.landmarker) {
+        // A task that finished initializing after Stop still needs closing.
+        this.landmarker.close?.();
+        this.landmarker = null;
+      }
+      throw wasCancelled ? cancelled() : error;
     }
   }
 
-  /** Stop camera + detector. */
+  /** Stop the physical camera and discard only driver data, not image identity. */
   stop() {
-    if (this.stream) {
-      for (const t of this.stream.getTracks()) t.stop();
-      this.stream = null;
-    }
+    this._cameraEpoch++;
+    this.running = false;
+    if (this.stream) for (const track of this.stream.getTracks()) track.stop();
+    this.stream = null;
     if (this.video) this.video.srcObject = null;
-    if (this.landmarker && this.landmarker.close) this.landmarker.close();
+    this.landmarker?.close?.();
     this.landmarker = null;
-    this.lastVideoTime = -1;
-    this.lastTs = -1;
+    this.lastVideoTime = this.lastTs = -1;
+    this._lastDetectMs = 0;
+    this._frameCounter = 0;
+    this.faceAbsentSince = -1;
+    this.categoryIndex = null;
+    this.hasFace = false;
+    this.weights.fill(0);
+    this.landmarks = [];
+    this.matrix.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+    this._detectRingN = this._detectRingHead = 0;
+    this._captureDowngraded = false;
   }
 
   /**
@@ -408,6 +472,7 @@ export class Tracker {
    * @returns {boolean} true when a detection result is fresh in .weights/.matrix
    */
   poll(nowMs, dtSec) {
+    if (!this.running) return false;
     if (this.fake) {
       this._frameCounter++;
       if (this._frameCounter % this.detectEveryNth !== 0) return false;
@@ -421,7 +486,7 @@ export class Tracker {
     }
 
     const video = this.video;
-    if (!video || video.readyState < 2) return false;
+    if (!this.landmarker || !video || video.readyState < 2) return false;
     if (video.currentTime === this.lastVideoTime) return false; // no new frame
     this.lastVideoTime = video.currentTime;
 
@@ -451,7 +516,8 @@ export class Tracker {
 
     const lm = res.faceLandmarks && res.faceLandmarks[0];
     this.hasFace = !!lm;
-    if (!lm) return true; // absence is information too (idle trigger)
+    this.weights.fill(0);
+    if (!lm) { this.landmarks = []; return true; } // absence is information too
 
     this.landmarks = lm;
     const bs = res.faceBlendshapes && res.faceBlendshapes[0];

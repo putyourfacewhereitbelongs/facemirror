@@ -253,6 +253,15 @@ export class PoseTracker {
     this.posTarget[2] = (tz - this.z0) * 0.01;
   }
 
+  /** Smoothly return to neutral on camera stop/loss; keep the image rig intact. */
+  resetTracking() {
+    this.target.set([0, 0, 0, 1]);
+    this.posTarget.fill(0);
+    this._lagQueue.length = 0;
+    this.z0 = null;
+    this.dragRelease();
+  }
+
   /**
    * Whole-face rotation drag (§6: grab anywhere that is not a control point).
    * @param {number} dxPx pointer delta x

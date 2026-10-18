@@ -523,7 +523,8 @@ export class EyeSolver {
    * @param {number} input.headYaw rad
    * @param {number} input.headPitch rad
    * @param {number} input.jawOpen 0..1
-   * @param {number} [input.camBlinkL] camera blink weight 0..1 (inject only)
+   * @param {number} [input.camBlinkL] camera lid closure 0..1 (live, or inject when untracked)
+   * @param {boolean} [input.cameraTracked] real webcam lids override idle blinks
    * @param {number} [input.camBlinkR]
    * @param {number|null} [input.camGazeYaw] iris-derived gaze (camera mode)
    * @param {number|null} [input.camGazePitch]
@@ -646,7 +647,10 @@ export class EyeSolver {
 
     // Lids from the scheduler, then stabilizeBlink for profile turns.
     const lids = s.lidTargets();
-    stabilizeBlink(lids.left, lids.right, headYaw, this._stabilize);
+    // Live motion is authoritative, including a held wink/closed eyes. A
+    // one-shot scheduler pulse alone reopens the photo's eyes too early.
+    stabilizeBlink(input.cameraTracked ? Math.max(0, Math.min(1, cl)) : lids.left,
+      input.cameraTracked ? Math.max(0, Math.min(1, cr)) : lids.right, headYaw, this._stabilize);
     let lidL = this._stabilize[0];
     let lidR = this._stabilize[1];
 
