@@ -94,10 +94,14 @@ class Ctx {
     if (box && inner) box = { x0: Math.max(box.x0, inner.x0), y0: Math.max(box.y0, inner.y0), x1: Math.min(box.x1, inner.x1), y1: Math.min(box.y1, inner.y1) };
     const degenerate = Math.abs(area) < 1 || !box;
     this.cur = { ...this.cur, clip: box, degenerate };
-    this.ops.push({ op: 'clip', args: [area], clip: box, degenerate });
+    /* pts: the clip polygon in path order (matrix assumed identity, which is
+       how the shell paint uses it) so a test can recover the exact warped
+       triangle the affine was asked to paint. */
+    this.ops.push({ op: 'clip', args: [area], clip: box, degenerate,
+                    pts: this.path.flat().map(q => [q[0], q[1]]) });
     this.opCount = (this.opCount || 0) + 1;
     this.totalOps = (this.totalOps || 0) + 1;
-    if (this.ops.length > 4096) { this.ops.splice(0, this.ops.length - 4096); this.opDrops = (this.opDrops || 0) + 1; }
+    if (this.ops.length > (this.opLimit || 4096)) { this.ops.splice(0, this.ops.length - (this.opLimit || 4096)); this.opDrops = (this.opDrops || 0) + 1; }
   }
   pathBBox() {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -125,7 +129,7 @@ class Ctx {
     /* The recorder is for per-frame inspection, not for archaeology: keep the
        tail only, otherwise a few thousand frames of tracing eats GBs.      */
     this.ops.push(rec);
-    if (this.ops.length > 4096) { this.ops.splice(0, this.ops.length - 4096); this.opDrops = (this.opDrops || 0) + 1; }
+    if (this.ops.length > (this.opLimit || 4096)) { this.ops.splice(0, this.ops.length - (this.opLimit || 4096)); this.opDrops = (this.opDrops || 0) + 1; }
     this.opCount = (this.opCount || 0) + 1;
     this.totalOps = (this.totalOps || 0) + 1;
     /* THE flash detector: a fill covering the whole canvas while the

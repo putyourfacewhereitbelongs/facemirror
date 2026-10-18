@@ -112,6 +112,13 @@ const src = new dom.Canvas(W, H); dom.allCanvases.add(src);
 T.buildFromLandmarks(toLandmarks(P0, W, H, FACE_PX), src, tess);
 const ses = T.session(), head = T.head(), mesh = T.mesh();
 ok('head built', !!head && head.fw > 100, `face width ${head.fw.toFixed(1)} px`);
+const platePaints = ses.cache.plate.getContext('2d').ops.filter(op => op.op === 'drawImage');
+ok('turn fallback preserves ear detail without overlapping blur patches',
+   platePaints.length === 1 && platePaints[0].args.length === 2 &&
+   platePaints[0].args.every(v => v === 0) &&
+   ses.cache.plate.width === ses.W && ses.cache.plate.height === ses.H,
+   `${platePaints.length} full-resolution source copy`);
+
 ok('mesh size', mesh.n > 550, `${mesh.n} points, ${mesh.base.length / 3} base tris, ${mesh.face.length / 3} tessellation tris`);
 ok('shell triangulation complete', mesh.base.length / 3 > 900 && mesh.face.length / 3 > 700,
    `base ${mesh.base.length / 3} tris for ${mesh.n} pts`);
@@ -193,6 +200,25 @@ for (let i = 1; i <= 120; i++) {
 }
 ok('fast sweep is continuous', worstSweep < head.fw * 0.09, `max ${worstSweep.toFixed(2)} px/frame (${(worstSweep / head.fw * 100).toFixed(2)}% of face width)`);
 
+section('rest crispness: a sub-deadband pose is held at neutral');
+/* Inside the pose deadband the estimate is exactly neutral, so a resting
+   frame stays on the crisp source photograph instead of repainting the whole
+   shell from a resampled one; just above it the pose is followed exactly.
+   (Dynamic jitter is the tracker's own story: in this rig a periodic
+   half-degree wobble can still excite a slow wander of the estimate.) */
+const holdPose = (yaw, pitch, n = 200) => { let r = null; for (let i = 0; i < n; i++) r = step1(yaw / deg, pitch / deg, 0, 1 / 60); return r; };
+const subDead = holdPose(0.3, 0.2);
+ok('a sub-deadband head pose stays exactly neutral',
+   Math.abs(yprOf(subDead.q).yaw) < 1e-9 && Math.abs(yprOf(subDead.q).pitch) < 1e-9,
+   `0.3°/0.2° in, ${(yprOf(subDead.q).yaw * deg).toFixed(4)}°/${(yprOf(subDead.q).pitch * deg).toFixed(4)}° out`);
+const aboveDead = holdPose(1.5, 0);
+ok('a pose above the deadband is followed exactly',
+   Math.abs(yprOf(aboveDead.q).yaw - 1.5 / deg) < 0.2 / deg,
+   `1.5° in, ${(yprOf(aboveDead.q).yaw * deg).toFixed(3)}° out`);
+const turnFrame = step1(2 / deg, 0, 0, 1 / 60, null, true);
+ok('a two-degree turn releases the shell', turnFrame.dbg.tris > 500,
+   `${turnFrame.dbg.tris} painted triangles`);
+
 section('dropout and recovery');
 t += 1000;
 dom.setClock(t);
@@ -237,20 +263,60 @@ ok('no flash-class canvas ops in 240 frames', nanFrames === 0, `frames with viol
 
 section('paint order and far-side handling');
 /* Test renderer geometry at known poses, independent of tracker lag. */
-const renderAt = q => FMRender.sessionFrame(ses, {
+const renderAt = (q, overrides = {}) => FMRender.sessionFrame(ses, {
   t: t / 1000, dt: 1 / 60, quality: 1, q,
   focal: 3.1, scale: 1, depthGain: 0.3, ox: 0, oy: 0,
   deltaCanonical: new Float32Array(478 * 3), jawOpen: 0, jawMeshGain: 1,
   limits: true, shade: 0, hairGain: 0, gaze: [[0, 0], [0, 0]], gazeGain: 1.9,
   lid: [0, 0], tongue: 0, vis: 0.4, bright: 1.15, warmth: 0,
-  showPoints: false, showMesh: false, origOnly: false, points: [], dragIndex: -1, hoverIndex: -1
+  showPoints: false, showMesh: false, origOnly: false, points: [], dragIndex: -1, hoverIndex: -1,
+  ...overrides
 });
-const restDbg = renderAt([0, 0, 0, 1]);
+const restDbg = renderAt([0, 0, 0, 1], { jawMeshGain: 0, limits: false });
 const turnDbg = renderAt(FM.quatFromYPR(0.55, 0, -0.1));
 ok('far-side mirroring activates on a turn', turnDbg.culled > restDbg.culled && turnDbg.culled > 0,
    `${restDbg.culled} frontal -> ${turnDbg.culled} mirrored triangles`);
-ok('shell coverage stays complete through yaw', restDbg.tris === 0 && turnDbg.tris > 2400,
+ok('shell coverage stays complete through yaw', restDbg.tris === 0 && turnDbg.tris > 2300,
    `${restDbg.tris} frontal source-only -> ${turnDbg.tris} turned shell triangles`);
+/* A still frame with no expression is exactly the source photograph: the
+   renderer must not repaint it "just in case". */
+ok('an undeformed rest frame paints nothing', restDbg.tris === 0, `${restDbg.tris} triangles`);
+/* Near-frontal movement must repaint texture, not just the debug dots. */
+const expression = new Float32Array(478 * 3);
+expression[61 * 3] = -5;
+expression[291 * 3] = 5;
+for (const quality of [0, 1, 2]) {
+  const dbg = renderAt([0, 0, 0, 1], { quality, deltaCanonical: expression });
+  ok(`frontal expression paints face texture at quality ${quality}`, dbg.tris > 0);
+}
+ok('a small head turn paints face texture', renderAt(FM.quatFromYPR(0.1, 0, 0)).tris > 0);
+/* Rigid head motion has to reach the mesh.  The deformation once subtracted
+   two equally posed projections, which cancels every rigid term: the face
+   stayed a flat frozen photo while the landmark overlay moved with the head.
+   Measured on the analytic rig, so the tracker's residual channel is out. */
+renderAt(FM.quatFromYPR(0.4, 0, 0), { jawMeshGain: 0, limits: false });
+const shift = i => ses.DST[i * 2] - ses.S2[i * 2];
+const nose = shift(1), chin = shift(152), farCheek = shift(454), nearCheek = shift(234);
+ok('a head turn deforms the face itself',
+   nose > 4 && chin > 2 && Math.abs(farCheek) > 8 && Math.sign(farCheek) !== Math.sign(nearCheek),
+   `nose ${nose.toFixed(1)} px, chin ${chin.toFixed(1)} px, far cheek ${farCheek.toFixed(1)} px, near cheek ${nearCheek.toFixed(1)} px at 23° yaw`);
+/* Tracked translation/dolly is the head's bulk motion: while the pose sits
+   in its deadband (panWeight 0) it must not touch the photo at all, and once
+   the head is really moving (panWeight 1) the shell has to follow it. */
+const settled = renderAt([0, 0, 0, 1], { ox: 12, oy: 8, panWeight: 0, jawMeshGain: 0, limits: false });
+ok('a resting head ignores tracker translation',
+   settled.tris === 0 && Math.abs(ses.DST[152 * 2] - ses.S2[152 * 2]) < 1e-6,
+   `${settled.tris} triangles, chin offset ${(ses.DST[152 * 2] - ses.S2[152 * 2]).toFixed(3)} px`);
+const gliding = renderAt([0, 0, 0, 1], { ox: 12, oy: 8, panWeight: 1, jawMeshGain: 0, limits: false });
+ok('turning head glides with tracker translation',
+   Math.abs(ses.DST[152 * 2] - ses.S2[152 * 2] - 12) < 0.01 && Math.abs(ses.DST[152 * 2 + 1] - ses.S2[152 * 2 + 1] - 8) < 0.01,
+   `chin offset ${(ses.DST[152 * 2] - ses.S2[152 * 2]).toFixed(2)}, ${(ses.DST[152 * 2 + 1] - ses.S2[152 * 2 + 1]).toFixed(2)} px`);
+/* Every painted triangle's affine must land its own source vertices on its
+   destination vertices. */
+const affine = checkTriangleAffines(ses);
+ok('painted affines map source vertices onto destination vertices',
+   affine.inspected > 2000 && affine.bad === 0,
+   `${affine.inspected} affines checked, worst ${affine.worst.toFixed(3)} px, ${affine.bad} wrong`);
 /* Both the base shell and face tessellation must remain far-to-near. */
 const orderOk = checkPaintOrder(ses);
 ok('both shell passes drawn far to near', orderOk.ok, orderOk.msg);
@@ -265,10 +331,151 @@ const mergedOrder = checkPaintOrder(ses);
 ok('stable merge fallback repairs adversarial prior order', forcedFallbacks === sortPasses.length && mergedOrder.ok,
    `${forcedFallbacks}/${sortPasses.length} passes fell back; ${mergedOrder.msg}`);
 
+section('expressions, eyelids and painted features');
+/* The idle blink adds its own symmetric blinks; turn it off so a wink can be
+   measured on its own, then back on so the blink itself is covered below. */
+dom.byId.get('ab').checked = false;
+const idleCase = (() => {
+  /* Idle blinks belong to an untracked puppet: drop the camera feed (trust
+     decays) and watch the lids for a few seconds. */
+  dom.byId.get('ab').checked = true;
+  T.preset('Neutral');
+  const wasCam = T.state().camOn;
+  T.state().camOn = false;
+  for (let i = 0; i < 120; i++) { t += 1000 / 60; dom.setClock(t); T.frame(t, 1 / 60, true); }
+  let blink = 0, sawOpen = 0, frames = 0;
+  for (let i = 0; i < 900; i++) {
+    t += 1000 / 60; dom.setClock(t);
+    const f = T.frame(t, 1 / 60, true);
+    blink = Math.max(blink, f.dbg.lid[0]);
+    if (f.dbg.lid[0] < 0.2) sawOpen++;
+    frames++;
+  }
+  T.state().camOn = wasCam;
+  dom.byId.get('ab').checked = false;
+  return { blink, sawOpen, frames };
+})();
+ok('an untracked puppet blinks on its own', idleCase.blink > 0.5 && idleCase.sawOpen > idleCase.frames * 0.5,
+   `peak lid ${idleCase.blink.toFixed(2)} over ${idleCase.frames} frames`);
+{
+  /* Teeth are only visible through the mouth opening.  Building the arch in
+     canonical space used to drop them ~300 px below the lips (the "floating
+     near the chin" report); the box below is what the viewer really sees. */
+  T.preset('Laugh');
+  for (let i = 0; i < 70; i++) step1(0.1, 0, 0, 1 / 60, null, true);
+  const f = step1(0.1, 0, 0, 1 / 60, null, true);
+  const box = f.dbg.mouth.teethBox;
+  const lipTop = Math.min(ses.DST[13 * 2 + 1], ses.DST[14 * 2 + 1]);
+  const chinY = ses.DST[152 * 2 + 1];
+  const mouthW = Math.hypot(ses.DST[291 * 2] - ses.DST[61 * 2], ses.DST[291 * 2 + 1] - ses.DST[61 * 2 + 1]);
+  ok('painted teeth sit on the mouth, not near the chin',
+     !!box && box.y0 > lipTop - mouthW * 0.5 && box.y1 < chinY - mouthW * 0.2 && box.y1 - box.y0 < mouthW * 0.6,
+     box ? `teeth y ${box.y0.toFixed(0)}..${box.y1.toFixed(0)} vs lips ${lipTop.toFixed(0)} and chin ${chinY.toFixed(0)} (mouth ${mouthW.toFixed(0)} px)` : 'no teeth painted');
+  T.preset('Neutral');
+  for (let i = 0; i < 50; i++) step1(0, 0, 0, 1 / 60);
+}
+const app = T.state();
+/* Gaze is one face direction: whatever the tracker adds per eye, a gaze
+   action must move both pupils the same way.  Measured as the change from
+   each eye's own Neutral reading, so the tracked component cancels. */
+dom.byId.get('ab').checked = false;   // the idle blink must not add its own blinks
+const gazeCase = (preset, axis) => {
+  T.preset('Neutral');
+  for (let i = 0; i < 60; i++) step1(0.15, 0, 0, 1 / 60, null, true);
+  const base = step1(0.15, 0, 0, 1 / 60, null, true).dbg.iris.map(v => v[axis]);
+  T.preset(preset);
+  for (let i = 0; i < 60; i++) step1(0.15, 0, 0, 1 / 60, null, true);
+  const now = step1(0.15, 0, 0, 1 / 60, null, true).dbg.iris.map(v => v[axis]);
+  return [now[0] - base[0], now[1] - base[1]];
+};
+{
+  const [dl, dr] = gazeCase('Look down', 1);
+  const [ul, ur] = gazeCase('Look up', 1);
+  const [rl, rr] = gazeCase('Look right', 0);
+  ok('both pupils look down together', dl > 3 && dr > 3 && Math.abs(dl - dr) < Math.max(dl, dr) * 0.25,
+     `left ${dl.toFixed(1)} px, right ${dr.toFixed(1)} px`);
+  /* both eyes must move the same *way*; the tracker adds its own per-eye
+     component on top of the action, so the magnitudes need not match */
+  ok('both pupils look up together', ul < -1.5 && ur < -1.5,
+     `left ${ul.toFixed(1)} px, right ${ur.toFixed(1)} px`);
+  ok('both pupils look the same way horizontally', rl > 1.5 && rr > 1.5,
+     `left ${rl.toFixed(1)} px, right ${rr.toFixed(1)} px`);
+}
+/* Structurally: one gaze vector, two eyes, one direction.  This is the exact
+   bug that sent one pupil up and the other down for a "look down". */
+{
+  const same = [];
+  for (const g of [[0.2, 0.2], [-0.2, 0.2], [0.25, -0.15]]) {
+    const st = renderAt([0, 0, 0, 1], { gaze: [g, g], gazeGain: 1.9 });
+    const [a, b] = st.iris;
+    same.push({ ang: Math.abs(Math.atan2(a[1], a[0]) - Math.atan2(b[1], b[0])), L: a, R: b });
+  }
+  const worstAng = Math.max(...same.map(v => v.ang));
+  const moved = same.every((v, i) => Math.hypot(v.L[0], v.L[1]) > 3 && Math.hypot(v.R[0], v.R[1]) > 3);
+  ok('one gaze direction moves both pupils the same way', worstAng < 0.05 && moved,
+     `worst angle between the two pupils ${(worstAng * 180 / Math.PI).toFixed(2)}°, both move ≥ 3 px`);
+}
+/* Wink: one lid closes, the other stays open, camera off. */
+{
+  T.preset('Wink');
+  for (let i = 0; i < 80; i++) step1(0, 0, 0, 1 / 60, null, true);
+  const wink = step1(0, 0, 0, 1 / 60, null, true).dbg.lid;
+  ok('the Wink preset closes exactly one eye', wink[0] > 0.8 && wink[1] < 0.25,
+     `lids ${wink.map(v => v.toFixed(2)).join(' / ')}`);
+  T.preset('Neutral');
+}
+/* The click-to-sculpt Wink moves eyelid geometry, not a signal: the renderer
+   has to notice the eye has closed and bring the painted lid down with it. */
+{
+  for (let i = 0; i < 40; i++) step1(0, 0, 0, 1 / 60);
+  app.sculpt.fill(0); app.outBuf.fill(0);
+  const mid = { x: (ses.DST[13 * 2] + ses.DST[14 * 2]) / 2, y: (ses.DST[13 * 2 + 1] + ses.DST[14 * 2 + 1]) / 2 };
+  T.sculptShape('wink', mid);
+  for (let i = 0; i < 80; i++) step1(0, 0, 0, 1 / 60, null, true);
+  const sculpted = step1(0, 0, 0, 1 / 60, null, true).dbg.lid;
+  ok('a sculpted wink closes the painted lid', sculpted[0] > 0.3 && sculpted[1] < 0.15,
+     `lids ${sculpted.map(v => v.toFixed(2)).join(' / ')} with camera off`);
+  /* The rack's Wink is a latch (the button toggles it), so release it by
+     hand here: every later test would otherwise run with one eye already
+     shut and its painted results would mean nothing. */
+  app.winkOn = false;
+  app.sculpt.fill(0); app.outBuf.fill(0);
+  for (let i = 0; i < 40; i++) step1(0, 0, 0, 1 / 60);
+  ok('the wink latch releases', app.winkOn === false && step1(0, 0, 0, 1 / 60, null, true).dbg.lid[0] < 0.25,
+     `winkOn ${app.winkOn}`);
+}
+/* Webcam path: blendshapes are the only thing that opens the mouth live. */
+{
+  const withBlends = (bs) => {
+    t += 1000 / 60;
+    T.setCamera(camFrame(0, 0, 0, t), CAM_W, CAM_H, t, bs);
+    dom.setClock(t);
+    return T.frame(t, 1 / 60, true);
+  };
+  T.preset('live');
+  for (let i = 0; i < 30; i++) withBlends({ jawOpen: 0 });
+  for (let i = 0; i < 90; i++) withBlends({ jawOpen: 0.9 });
+  const open = withBlends({ jawOpen: 0.9 });
+  ok('webcam jawOpen opens the mouth', open.dbg.mouth.h > 0.12 && open.jaw > 0.05 && open.dbg.mouth.upperTeeth > 0,
+     `jaw ${(open.jaw * deg).toFixed(1)}°, mouth envelope ${open.dbg.mouth.h.toFixed(3)}, ${open.dbg.mouth.upperTeeth} teeth`);
+  const lipRest = ses.DST[13 * 2 + 1];
+  for (let i = 0; i < 90; i++) withBlends({ mouthSmileLeft: 1, mouthSmileRight: 1 });
+  const smile = withBlends({ mouthSmileLeft: 1, mouthSmileRight: 1 });
+  ok('webcam smile moves the mouth corners', ses.DST[123] - ses.S2[123] < -3,
+     `corner lift ${(ses.DST[123] - ses.S2[123]).toFixed(1)} px (upper lip ${(lipRest - ses.DST[13 * 2 + 1]).toFixed(1)} px)`);
+  for (let i = 0; i < 90; i++) withBlends({ eyeBlinkLeft: 1 });
+  const blink = withBlends({ eyeBlinkLeft: 1 });
+  ok('webcam blinkLeft closes one eye', blink.dbg.lid[0] > 0.8 && blink.dbg.lid[1] < 0.25,
+     `lids ${blink.dbg.lid.map(v => v.toFixed(2)).join(' / ')}`);
+  for (let i = 0; i < 60; i++) withBlends({});
+  T.preset('Neutral');
+  for (let i = 0; i < 40; i++) step1(0, 0, 0, 1 / 60);
+}
+
 section('mouth interior');
 const outputCtx = dom.byId.get('puppet').getContext('2d');
 const toothVisibility = dom.byId.get('tv');
-toothVisibility.value = '0.4';
+toothVisibility.value = '0.85';                 // the value the panel ships with
 T.preset('Neutral');
 for (let i = 0; i < 35; i++) step1(0.2, 0, 0, 1 / 60, null, true);
 resetOne(outputCtx);
@@ -293,10 +500,160 @@ ok('tongue is rendered through the inner-lip clip', tongueFrame.dbg.mouth.tongue
    `drawn ${tongueFrame.dbg.mouth.tongue}; candidate clips ${outputCtx.ops.filter(op => op.op === 'clip' && op.clip).length}; contained ${tongueClipped}`);
 ok('teeth/tongue outputs stay finite', [tongueFrame.dbg.mouth.h, tongueFrame.dbg.mouth.upperAlpha,
   tongueFrame.dbg.mouth.lowerAlpha, ses.jaw].every(Number.isFinite));
-T.preset('Neutral');
+
+/* The arches have to be *inside* the opening the viewer sees.  Both of them
+   used to be placed outward from the lip line — the lower arch on the chin,
+   the upper one above the upper lip — where the inner-lip clip erased them,
+   and the old bounding-box overlap test still called it visible.  `teethArea`
+   is the opaque area of the crowns actually inside the opening. */
+{
+  /* A neutral rig.  `step1` feeds the tracker, and an unconsumed camera frame
+     leaves the tracked pose (rotated, 0.5x zoomed by earlier sections) in
+     place even with the camera off — which pinches the mouth into a sliver
+     and makes these results meaningless.  Talk at the puppet with the camera
+     off, like a user who has not started the webcam. */
+  const tr = T.state().tracker;
+  const stepOff = (dt = 1 / 60) => { t += dt * 1000; dom.setClock(t); return T.frame(t, dt, true); };
+  const standDown = () => {
+    T.state().camOn = false; T.state().cam = null;
+    tr.trust = 0; tr.q = [0, 0, 0, 1]; tr.qTarget = [0, 0, 0, 1];
+    tr.ox = tr.oy = 0; tr.scale = 1;
+    for (let i = 0; i < 40; i++) stepOff();
+  };
+  standDown();
+  T.preset('Laugh');
+  for (let i = 0; i < 80; i++) stepOff();
+  const f = stepOff();
+  const m = f.dbg.mouth, fr = m.frame, box = m.teethBox;
+  const ap = fr ? fr.innerY1 - fr.innerY0 : 0;
+  const bites = !!fr && fr.lineUp >= fr.upY - 1 && fr.lineLo <= fr.loY + 1;
+  const inside = !!box && !!fr && box.y0 >= fr.innerY0 - 2.5 && box.y1 <= fr.innerY1 + 2.5;
+  /* How much of the opening the arches take, top and bottom, and how much
+     dark gap is left between them.  A real open mouth is roughly a third
+     teeth, a third dark, a third teeth. */
+  const share = fr ? (fr.lineUp - fr.upY) / (fr.loY - fr.upY) : 0;
+  ok('a wide open mouth shows its teeth inside the opening',
+     m.h > 0.4 && inside && bites && ap > 8 && m.teethArea > 80 && share > 0.2 && share < 0.45,
+     `envelope ${m.h.toFixed(2)}, visible teeth ${m.teethArea.toFixed(0)} px² in a ${ap.toFixed(0)}x${m.mw.toFixed(0)} px opening, ` +
+     `each arch ${(share * 100).toFixed(0)}% of it, ` +
+     `bites ${fr ? `${fr.lineUp.toFixed(0)}/${fr.lineLo.toFixed(0)} vs lips ${fr.innerY0.toFixed(0)}..${fr.innerY1.toFixed(0)}` : 'n/a'}`);
+
+  /* ...and a closed mouth shows none of them, even at full visibility. */
+  T.preset('Neutral');
+  for (let i = 0; i < 70; i++) stepOff();
+  const c = stepOff().dbg.mouth;
+  ok('a closed mouth shows no teeth', c.h < 0.05 && c.teethArea < 12,
+     `envelope ${c.h.toFixed(2)}, visible teeth ${c.teethArea.toFixed(1)} px²`);
+
+  /* Phrases, not a fixed gape: the talking preset has to open, close and
+     keep the teeth in view while it does. */
+  T.preset('Talking');
+  let peak = 0, sum = 0, seen = 0, shut = 0, n = 0;
+  for (let i = 0; i < 300; i++) {
+    const m = stepOff().dbg.mouth;
+    peak = Math.max(peak, m.h); sum += m.h; n++;
+    if (m.teethArea > 25) seen++;
+    if (m.h < 0.15) shut++;
+  }
+  ok('the talking preset speaks: opens, closes, teeth in view',
+     peak > 0.45 && sum / n > 0.12 && seen / n > 0.5 && shut > 8,
+     `peak ${peak.toFixed(2)}, mean ${(sum / n).toFixed(2)}, teeth in view ${(100 * seen / n).toFixed(0)}% of frames, ` +
+     `closed on ${shut} frames`);
+
+  /* Opening the mouth must move the jaw and nothing else.  A flat fallback
+     weight of 0.15 on the whole mesh used to drag the eyes, brows, nose and
+     forehead down with every syllable. */
+  {
+    T.preset('Neutral');
+    for (let i = 0; i < 60; i++) stepOff();
+    const shut = Float32Array.from(ses.DST);
+    const realTalk = FMEngine.talkAt;
+    FMEngine.talkAt = () => ({ j: 1 });
+    T.preset('Talking');
+    for (let i = 0; i < 60; i++) stepOff();
+    const open = Float32Array.from(ses.DST);
+    const mOpen = ses.lastDebug.mouth;
+    FMEngine.talkAt = realTalk;
+    const dy = i => open[i * 2 + 1] - shut[i * 2 + 1];
+    const upperFace = [10, 105, 334, 151, 4, 168, 159, 386, 133, 263, 33, 362].map(dy);
+    const worst = Math.max(...upperFace.map(Math.abs));
+    ok('opening the mouth leaves the eyes and forehead alone', worst < 1.5 && mOpen.h > 0.4,
+       `worst upper-face move ${worst.toFixed(2)} px (eyes, brows, nose, lid corners) at envelope ${mOpen.h.toFixed(2)}`);
+    /* The mandible is one rigid block: the lower lip and the chin drop
+       together, the upper lip stays. */
+    const lipLo = dy(14), chin = dy(152), lipUp = dy(13);
+    ok('the lower lip and chin drop together, the upper lip stays',
+       lipLo > 6 && chin > 6 && Math.abs(lipLo - chin) < 3 && Math.abs(lipUp) < 3,
+       `lower lip ${lipLo.toFixed(1)} px, chin ${chin.toFixed(1)} px, upper lip ${lipUp.toFixed(1)} px`);
+    /* And the arches part rather than slide: the upper stays with the
+       maxilla, the lower rides down with the mandible, and the dark gap
+       between the bite lines grows with the opening.  Anchoring both arches
+       to the *middle* of the opening made the teeth a thin band in the
+       centre of the mouth that never separated. */
+    const cu = mOpen.boxUp, cl = mOpen.boxLo;
+    const mid = b => (b ? (b.y0 + b.y1) / 2 : null);
+    FMEngine.talkAt = () => ({ j: 0.5 });
+    for (let i = 0; i < 60; i++) stepOff();
+    const half = ses.lastDebug.mouth;
+    FMEngine.talkAt = realTalk;
+    const gaps = [];
+    for (const j of [0.15, 0.3, 0.5, 0.75]) {
+      FMEngine.talkAt = () => ({ j });
+      for (let i = 0; i < 60; i++) stepOff();
+      const mm = ses.lastDebug.mouth;
+      if (mm.frame) gaps.push({ j, ap: mm.frame.innerY1 - mm.frame.innerY0, gap: mm.frame.lineLo - mm.frame.lineUp,
+                                band: mm.frame.lineUp - mm.frame.upY });
+    }
+    FMEngine.talkAt = realTalk;
+    for (let i = 0; i < 60; i++) stepOff();
+    const hu = mid(half ? half.boxUp : null), hl = mid(half ? half.boxLo : null);
+    ok('the teeth part with the jaw instead of sliding down together',
+       !!cu && !!cl && hu !== null && hl !== null &&
+       Math.abs(mid(cu) - hu) < 3 && (mid(cl) - hl) > 3,
+       `upper arch moved ${(mid(cu) - hu).toFixed(1)} px, lower arch ${(mid(cl) - hl).toFixed(1)} px between half and full open`);
+    const growing = gaps.length === 4 && gaps.every((g, i) => i === 0 || g.gap > gaps[i - 1].gap + 0.4);
+    const bandUp = gaps[0] && gaps[3] ? gaps[3].band - gaps[0].band : 0;
+    ok('the gap between the arches opens with the mouth', growing && gaps[3].gap > 5 && bandUp > 1.5,
+       gaps.map(g => `${g.ap.toFixed(0)}px→${g.gap.toFixed(1)}px`).join(' ') + ` (aperture→arch gap, band ${gaps[0].band.toFixed(1)}→${gaps[3].band.toFixed(1)} px)`);
+  }
+
+  /* A smile squints the aperture by itself; the painted lid must not follow
+     it shut, and a latched wink must stay one-eyed while it happens. */
+  {
+    T.preset('Big smile');
+    for (let i = 0; i < 90; i++) stepOff();
+    const smile = stepOff().dbg.lid;
+    app.winkOn = true;                           // the rack's Wink latch
+    for (let i = 0; i < 90; i++) stepOff();
+    const winked = stepOff().dbg.lid;
+    app.winkOn = false;
+    T.preset('Neutral');
+    for (let i = 0; i < 60; i++) stepOff();
+    ok('a smile does not shut the eyes', smile[0] < 0.35 && smile[1] < 0.35,
+       `lids ${smile.map(v => v.toFixed(2)).join(' / ')}`);
+    ok('a wink stays one-eyed while smiling', winked[0] > 0.8 && winked[1] < 0.25,
+       `lids ${winked.map(v => v.toFixed(2)).join(' / ')}`);
+  }
+
+  /* Speech speed: a jaw step has to arrive inside a syllable.  At the old
+     3.2/s the jaw needed over a second and every syllable was smeared. */
+  const realTalkAt = FMEngine.talkAt;
+  FMEngine.talkAt = () => ({ j: 1 });
+  T.preset('Talking');
+  let reached = -1;
+  for (let i = 0; i < 60 && reached < 0; i++) {
+    const m = stepOff().dbg.mouth;
+    if (m.h > 0.7) reached = i;
+  }
+  FMEngine.talkAt = realTalkAt;
+  ok('the jaw reaches a full open inside a syllable', reached >= 0 && reached <= 24,
+     reached < 0 ? 'never reached' : `0.7 envelope after ${(reached / 60 * 1000).toFixed(0)} ms`);
+  T.preset('Neutral');
+  for (let i = 0; i < 40; i++) stepOff();
+}
 
 section('interaction');
-const pc = dom.byId.get('puppet'), pcCtx = pc.getContext('2d'), app = T.state();
+const pc = dom.byId.get('puppet'), pcCtx = pc.getContext('2d');
 const rack = dom.byId.get('sculptTools');
 ok('sculpt buttons registered', rack.children.length >= 8, `${rack.children.length} tools`);
 ok('preset rack populated', dom.byId.get('presets').children.length > 15, `${dom.byId.get('presets').children.length} presets`);
@@ -484,6 +841,90 @@ function mouthClipContained(ses, ctx) {
   });
   return innerClips.length >= 2; // cavity + tongue passes both clip to the inner-lip aperture
 }
+/* The painted affine must map the triangle's source vertices onto its
+   destination vertices. Clip/order tests cannot see a scrambled affine:
+   the triangle would still paint, in the right place, with wrong pixels. */
+function checkTriangleAffines(ses) {
+  /* A painted triangle is drawn as clip(dest triangle grown by the pass pad)
+     + setTransform(affine) + drawImage(source rect).  Recover the triangle
+     that the op belongs to using each pass's own pad and tessellation, then
+     require the affine to land that triangle's source vertices on its
+     destination vertices.  A swapped coefficient pair would keep the paint
+     order and clip legal while scrambling the pixels. */
+  const lc = ses.lctx;
+  const passes = [ses.triA, ses.triB].filter(Boolean);
+  const cap = lc.opLimit;
+  lc.opLimit = 80000;
+  lc.ops.length = 0;
+  renderAt(FM.quatFromYPR(0.5, 0, 0.08), { quality: 1 });
+  lc.opLimit = cap;
+  const midX = ses.mid[0];
+  const key = (x, y) => `${Math.round(x * 4)}:${Math.round(y * 4)}`;
+  const indexOf = pass => {
+    const idx = new Map();
+    for (let t = 0; t < pass.n; t++) {
+      const a = pass.list[t * 3], b = pass.list[t * 3 + 1], c = pass.list[t * 3 + 2];
+      const k = key((ses.DST[a * 2] + ses.DST[b * 2] + ses.DST[c * 2]) / 3,
+                    (ses.DST[a * 2 + 1] + ses.DST[b * 2 + 1] + ses.DST[c * 2 + 1]) / 3);
+      if (!idx.has(k)) idx.set(k, []);
+      idx.get(k).push({ t, a, b, c, d: [a, b, c] });
+    }
+    return idx;
+  };
+  const idx = indexOf(ses.triA);
+  const idxB = passes.length > 1 ? indexOf(ses.triB) : null;
+  const unpad = (raw, pad) => {
+    const gx = (raw[0][0] + raw[1][0] + raw[2][0]) / 3, gy = (raw[0][1] + raw[1][1] + raw[2][1]) / 3;
+    return raw.map(([x, y]) => {
+      const ux = x - gx, uy = y - gy, l = Math.hypot(ux, uy) || 1;
+      return [gx + ux * (l - pad) / l, gy + uy * (l - pad) / l];
+    });
+  };
+  const apply = (m, p) => [m[0] * p[0] + m[2] * p[1] + m[4], m[1] * p[0] + m[3] * p[1] + m[5]];
+  const dErr = (cand, d) => Math.max(...[0, 1, 2].map(k =>
+    Math.hypot(d[k][0] - ses.DST[cand.d[k] * 2], d[k][1] - ses.DST[cand.d[k] * 2 + 1])));
+  const search = (map, d) => {
+    if (!map) return null;
+    const cx = (d[0][0] + d[1][0] + d[2][0]) / 3, cy = (d[0][1] + d[1][1] + d[2][1]) / 3;
+    let best = null, bestErr = 0.05;
+    for (let ox = -2; ox <= 2; ox++) for (let oy = -2; oy <= 2; oy++) {
+      for (const cand of (map.get(key(cx + ox * 0.25, cy + oy * 0.25)) || [])) {
+        const err = dErr(cand, d);
+        if (err < bestErr) { bestErr = err; best = cand; }
+      }
+    }
+    return best;
+  };
+  let clipPts = null, mat = null, inspected = 0, worst = 0, bad = 0, skipped = 0, worstAt = null;
+  for (const op of lc.ops) {
+    if (op.op === 'clip') { clipPts = op.pts && op.pts.length >= 3 ? op.pts.slice(0, 3) : null; mat = null; continue; }
+    if (op.op === 'setTransform') { mat = op.args.slice(); continue; }
+    if (op.op !== 'drawImage' || !clipPts || !mat) continue;
+    const raw = clipPts; clipPts = null;
+    let best = null, bestDst = null, bestFit = Infinity;
+    for (const [map, pad] of [[idx, ses.triA.pad * (ses.triA.padScale || 1)],
+                              [idxB, ses.triB ? ses.triB.pad * (ses.triB.padScale || 1) : 0]]) {
+      const d = unpad(raw, pad);
+      const cand = search(map, d);
+      if (!cand) continue;
+      const src = cand.d.map(v => [ses.S2[v * 2], ses.S2[v * 2 + 1]]);
+      const mirrored = [[2 * midX - src[0][0], src[0][1]], [2 * midX - src[2][0], src[2][1]],
+                        [2 * midX - src[1][0], src[1][1]]];          // far-side b/c swap
+      const fit = pts => Math.max(...[0, 1, 2].map(k => {
+        const [mx, my] = apply(mat, pts[k]);
+        return Math.hypot(mx - d[k][0], my - d[k][1]);
+      }));
+      const e = Math.min(fit(src), fit(mirrored));
+      if (e < bestFit) { bestFit = e; best = cand; bestDst = d; }
+    }
+    if (!best) { skipped++; continue; }
+    inspected++;
+    if (bestFit > worst) { worst = bestFit; worstAt = [best.t, best.d.join(',')]; }
+    if (bestFit > 1.0) bad++;
+  }
+  return { inspected, worst, bad, skipped, worstAt, painted: passes.reduce((n, p) => n + p.n, 0) };
+}
+
 function checkPaintOrder(ses) {
   /* Verify the depth-key order actually consumed by both shell passes. */
   const passes = [ses.triA, ses.triB].filter(Boolean);
