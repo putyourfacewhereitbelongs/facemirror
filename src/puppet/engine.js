@@ -45,6 +45,11 @@
   /* upper / lower inner lip run (used to hang teeth and the tongue) */
   const UP_LIP = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308];
   const LO_LIP = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308];
+  /* `L`/`R` are screen sides, not the face's own sides: the preview is a
+     mirror, so the subject's left eye is the eye on the left of the screen.
+     The blendshape names are anatomical, so they map straight across (see the
+     eyelid pass in ui.js).  `ICON`/`LIDS` index sets below follow the same
+     convention. */
   const LIDS = { L: { up: [159, 158, 160, 161, 157], lo: [145, 153, 144, 154, 163], ic: 133, oc: 33 },
                  R: { up: [386, 385, 387, 388, 384], lo: [374, 380, 373, 381, 390], ic: 362, oc: 263 } };
   const EYE_RING = { L: LEYE, R: REYE };
@@ -291,19 +296,34 @@
     'Look left': { gx: -1 }, 'Look right': { gx: 1 }, 'Look up': { gy: -1 }, 'Look down': { gy: 1 },
     'Talking': null
   };
-  /* Deterministic pseudo-speech for the preset "Talking" (no audio) */
+  /* Deterministic pseudo-speech for the preset "Talking" (no audio).
+     Speech is syllables in phrases, not a sine: the phrase envelope opens
+     and closes, each syllable picks a vowel height, bilabials (m/b/p) shut
+     the lips for an instant, and the jaw has to move far enough to part the
+     lips — an under-driving jaw is what made this read as a mouth that
+     stretches instead of opens. */
   function talkAt(t) {
     const s = (k, ph) => Math.abs(Math.sin(k * 127.1 + ph) * 43758.5453) % 1;
-    const e = clamp01(Math.sin(t * 0.72) * 3 + 1.15);
-    const g = t * 4.3, k = Math.floor(g), f = g - k;
-    const o = Math.pow(Math.sin(Math.PI * f), 0.7) * e;
+    /* Phrases with short breaths, not 4 s of silence: the mouth should keep
+       moving while the preset is on, with the jaw dipping low between
+       phrases and the bilabials doing the real closures. */
+    const e = clamp01(0.62 + 0.38 * Math.sin(t * 0.85) + 0.12 * Math.sin(t * 2.7 + 1.1));
+    const g = t * 4.1, k = Math.floor(g), f = g - k;      // ~4 syllables/s
+    const o = Math.pow(Math.sin(Math.PI * f), 0.55) * e;
     const h = s(k, 0), h2 = s(k, 3.1);
     const round = h > 0.68;
+    const shut = h2 < 0.20;                               // bilabial (m/b/p)
+    const dental = h2 >= 0.34 && h2 < 0.58;               // tongue at the teeth
+    const jaw = o * (0.30 + 0.55 * h) * (shut ? 0.12 : 1);
     return {
-      j: o * (0.10 + 0.42 * h),                       // jaw open, vowel height
+      j: jaw,                                         // jaw open, vowel height
       pk: round ? o * 0.85 : o * 0.12,                // rounded vowels
-      st: h2 < 0.26 ? o * 0.6 : 0,                    // tongue tip for dentals
-      sL: 0.10 + 0.12 * h, sR: 0.10 + 0.12 * h,       // mouth corners spread
+      /* `tg` is the tongue; `st` is a sideways mouth stretch, so dentals get
+         a tongue flash and only a touch of spread (driving `st` hard was part
+         of why speech looked like the lips were being stretched). */
+      st: shut ? 0 : o * 0.22,
+      tg: !shut && dental ? o * 0.55 : 0,
+      sL: 0.08 + 0.14 * h + jaw * 0.10, sR: 0.08 + 0.14 * h + jaw * 0.10,
       bu: e * 0.10 * h2, ck: 0.2
     };
   }
@@ -314,6 +334,11 @@
     const { fw, fh, ctr, mid, noseY } = head;
     const cx = mid[0], yMouth = (head.P[13][1] + head.P[14][1]) / 2;
     const eyeY = (head.P[159][1] + head.P[386][1]) / 2;
+    /* Upper/lower lid is decided against the eye *corners*, not against
+       eyeY: eyeY is the average of the two main upper-lid landmarks, so
+       testing "p[1] < eyeY" classified the upper lids themselves as lower —
+       a squint then lifted the upper lid and widened the eye.  */
+    const lidMidY = u => (head.P[u ? 263 : 33][1] + head.P[u ? 362 : 133][1]) / 2;
     const SD = v => (v >= 0 ? 1 : -1);
     for (let i = 0; i < 478; i++) {
       const p = head.P[i];
@@ -326,7 +351,11 @@
       /* ---- mouth ---------------------------------------------------- */
       const mouthMask = Math.exp(-(((p[0] - cx) / (fw * 0.55)) ** 2) - ((p[1] - yMouth) / (fh * 0.22)) ** 2);
       if (mouthMask > 0.004) {
-        const lift = clamp01((v - 0.05) / 0.4);          // 0 at the vermilion, 1 at the chin
+        /* "0 at the vermilion, 1 at the chin" has to be measured from the
+           mouth line itself.  Anchoring it at a fixed height faded the smile
+           out exactly where the corners are, so a preset smile moved the
+           cheeks and left the mouth alone. */
+        const lift = clamp01((p[1] - yMouth) / (fh * 0.4));
         const up = 1 - lift;
         const smileAmt = sm * mouthMask;
         dy += (-smileAmt * fh * 0.20 * au * au * up - A.fr * fh * 0.16 * au * au * up);
@@ -359,11 +388,19 @@
         dy -= A.nz * fh * 0.03 * (Math.abs(p[0] - cx) < fw * 0.3 ? 1 : 0.5);
         dx += (p[0] > cx ? 1 : -1) * A.ur * fw * 0.02;
       }
-      /* ---- eyes: squint narrows the aperture ------------------------ */
+      /* ---- eyes: squint narrows the aperture, blink/wink closes it --- */
       const eyeMask = Math.exp(-(((Math.abs(p[0] - cx) - fw * 0.24) / (fw * 0.17)) ** 2) - ((p[1] - eyeY) / (fh * 0.09)) ** 2);
-      if (eyeMask > 0.004) {
-        const isUpper = p[1] < eyeY;
+      /* Lids only.  Displacing the corners with the apertures sheared the eye
+         box (one corner up, one down), and the irises have to stay rigid. */
+      const isEyeCorner = i === 33 || i === 133 || i === 263 || i === 362;
+      if (eyeMask > 0.004 && i < 468 && !isEyeCorner) {
+        const isUpper = p[1] < (u < 0 ? lidMidY(0) : lidMidY(1));
         dy += (isUpper ? 1 : -0.55) * A.sq * fh * 0.05 * eyeMask;
+        /* bL/bR are the image-left / image-right eyelid actions: the upper
+           lid comes down and the lower lid lifts, so the eye in the picture
+           actually shuts instead of only being covered by painted skin. */
+        const blink = u < 0 ? A.bL : A.bR;
+        if (blink) dy += (isUpper ? 1 : -0.42) * blink * fh * 0.105 * eyeMask;
       }
       const g3 = i * 3;
       d[g3] += dx; d[g3 + 1] += dy; d[g3 + 2] += dz;
@@ -418,41 +455,61 @@
      The jaw, lower teeth, tongue and chin share one bone, so an open
      mouth never looks like a vertical smear.
      =================================================================== */
-  function tmjAxis(head) {
-    /* hinge roughly 6% of face width above the mouth, passing through the
-       ear canal line — the classic TMJ approximation                     */
-    const a = head.P[234], b = head.P[454];
-    const y = (head.P[13][1] + head.P[14][1]) / 2 - head.fh * 0.10;
-    const zc = (head.P[234][2] + head.P[454][2]) / 2 - head.fw * 0.18;
-    return { p: [(a[0] + b[0]) / 2, y, zc], dir: v3.norm([b[0] - a[0], (b[1] - a[1]) * 0.35, (b[2] - a[2]) * 0.9]) };
-  }
+  /* The mandible landmarks the model names explicitly: the lips and the jaw
+     line.  They move as one block with the jaw, whatever their depth. */
+  const JAW_LINE = [152, 148, 176, 149, 150, 136, 377, 400, 378, 379, 365, 397, 288, 361, 323, 454,
+                    17, 0, 18, 200, 199, 175];
+  const JAW_BLOCK = new Set([...JAW_LINE, ...LIPS_I, ...LIPS_O, ...UP_LIP, ...LO_LIP]);
   const jawWeight = (i, head) => {
     if (i >= 468) return 0;
     const upper = UP_LIP.includes(i), lower = LO_LIP.includes(i);
     if (upper || lower || LIPS_O.includes(i) || LIPS_I.includes(i)) {
-      if (upper && lower) return 0.42;               // mouth corners bridge both lips
+      if (upper && lower) return 0.30;               // mouth corners bridge both lips
       if (upper) return 0.06;                        // maxilla / upper lip stays nearly rigid
       if (lower) return 0.94;                        // lower lip follows the mandible
       const midY = (head.P[13][1] + head.P[14][1]) * 0.5;
-      return clamp(0.5 + (head.P[i][1] - midY) / (head.fh * 0.02) * 0.45, 0.05, 0.95);
+      return clamp(0.30 + (head.P[i][1] - midY) / (head.fh * 0.02) * 0.45, 0.05, 0.95);
     }
-    if (i === 152 || i === 148 || i === 176 || i === 149 || i === 150 || i === 136 || i === 377 || i === 400 ||
-        i === 378 || i === 379 || i === 365 || i === 397 || i === 288 || i === 361 || i === 323 || i === 454 ||
-        i === 17 || i === 0 || i === 18 || i === 200 || i === 199 || i === 175) return 1;
-    return 0.15;
+    if (JAW_LINE.includes(i)) return 1;
+    /* Everything else follows the mandible only *below* the mouth: a flat
+       0.15 on the rest of the mesh dragged the eyes, brows, nose and
+       forehead down with every syllable.  Zero at the mouth line, smoothstep
+       to the chin, so the jaw moves the jaw. */
+    const mouthY = (head.P[13][1] + head.P[14][1]) * 0.5;
+    const t = clamp01((head.P[i][1] - (mouthY - head.fh * 0.03)) / (head.fh * 0.22));
+    return t * t * (3 - 2 * t);
   };
-  function applyJaw(head, pts, angle, axis) {
+  /* Mandible motion.  Rotating rigidly about the TMJ hinge does not survive
+     this mesh's depth model: the chin sits close to the hinge's depth plane,
+     so a 28 deg turn swung the chin *up and back* while the lower lip went
+     down — the lower face visibly contradicted itself, and it takes the
+     mandible's depth with it.  The mandible is driven as the hinge's
+     first-order field instead: every mandible point moves down (and a little
+     back) by an amount that grows from the mouth line to the chin, so the
+     lips, the corners, the jaw line and the chin all agree.  `angle` is the
+     same signed mouth-open amount applyJaw always took. */
+  function applyJaw(head, pts, angle) {
     if (Math.abs(angle) < 1e-4) return;
-    const R = m3.fromAxisAngle(axis.dir, angle);
+    const mouthY = (head.P[13][1] + head.P[14][1]) * 0.5;
+    /* A full open drops the chin by 7 % of the face height and parts the
+       lips by roughly a third of the mouth width. */
+    const drop = head.fh * 0.062 * (angle / 0.5);
     for (let i = 0; i < 478; i++) {
       const w = jawWeight(i, head);
       if (w <= 0) continue;
-      const rel = v3.sub(head.P[i], axis.p);
-      const rot = m3.mv(R, rel);
+      /* The lips, the corners and the jaw line move as the mandible block;
+         the rest of the face follows a falloff that is zero at the mouth
+         line and reaches the chin, so the jaw line near the ear (the hinge)
+         stays put while the chin drops. */
+      let g = 1;
+      if (!JAW_BLOCK.has(i)) {
+        const d = clamp01((head.P[i][1] - mouthY) / (head.fh * 0.22));
+        g = d * d * (3 - 2 * d);
+      }
+      const dy = drop * g * w;
       const p = pts[i];
-      p[0] += (axis.p[0] + rot[0] - head.P[i][0]) * w;
-      p[1] += (axis.p[1] + rot[1] - head.P[i][1]) * w;
-      p[2] += (axis.p[2] + rot[2] - head.P[i][2]) * w;
+      p[1] += dy;
+      p[2] -= dy * 0.22;                    // the mandible also moves back
     }
   }
 
@@ -585,9 +642,17 @@
     const yaw = softLimit(e.yaw * gY * rad, limY * rad) / rad;
     const pitch = softLimit(e.pitch * gP * rad, limP * rad) / rad;
     const roll = softLimit(e.roll * gR * rad, limR * rad) / rad;
-    S.ypr.yaw = oneEuroRun(S.yprF.yaw, yaw, t);
-    S.ypr.pitch = oneEuroRun(S.yprF.pitch, pitch, t);
-    S.ypr.roll = oneEuroRun(S.yprF.roll, roll, t);
+    /* Pose deadband, the rigid counterpart of the residual deadband above.
+       A hand-still head still reports a few thousandths of a radian, and a
+       renderer that follows it has to repaint the whole shell from a
+       resampled photo.  Inside the band the pose is exactly neutral, so a
+       resting frame stays on the crisp source photograph; real motion above
+       it is followed normally.                                            */
+    const poseDead = (c.poseDead === undefined ? POSE_DEAD_DEG : c.poseDead) / rad;
+    const deadband = v => Math.abs(v) < poseDead ? 0 : v;
+    S.ypr.yaw = oneEuroRun(S.yprF.yaw, deadband(yaw), t);
+    S.ypr.pitch = oneEuroRun(S.yprF.pitch, deadband(pitch), t);
+    S.ypr.roll = oneEuroRun(S.yprF.roll, deadband(roll), t);
     S.qTarget = quatFromYPR(S.ypr.yaw, S.ypr.pitch, S.ypr.roll);
     /* slew-limited slerp: bounds angular acceleration as well as speed */
     S.q = quatSlew(S.q, quatFollow(S.q, S.qTarget, dt, c.poseRate || 26), dt, (c.poseSpeed || 5.4));
@@ -666,12 +731,25 @@
     if (bs) for (const c of bs) map[c.categoryName] = c.score;
     return n => map[n] || 0;
   }
+  /* Aperture of one eye, normalised by the eye's own width.  The gap is
+     measured perpendicular to the corner-to-corner axis, so a pose that
+     shears or rotates the eye box (tracked head, zoom) cannot masquerade as
+     a squint — only the lids moving towards each other can. */
   function eyeOpeningRatio(P, which) {
     const d = LIDS[which];
-    const up = d.up.reduce((a, i) => a + P[i].y, 0) / d.up.length;
-    const lo = d.lo.reduce((a, i) => a + P[i].y, 0) / d.lo.length;
-    const ew = Math.hypot(P[d.oc].x - P[d.ic].x, P[d.oc].y - P[d.ic].y) || 1;
-    return (lo - up) / ew;
+    const ic = P[d.ic], oc = P[d.oc];
+    const ex = oc.x - ic.x, ey = oc.y - ic.y;
+    const ew = Math.hypot(ex, ey) || 1;
+    const nx = -ey / ew, ny = ex / ew;
+    let ux = 0, uy = 0, lx = 0, ly = 0;
+    for (const i of d.up) { ux += P[i].x; uy += P[i].y; }
+    for (const i of d.lo) { lx += P[i].x; ly += P[i].y; }
+    ux /= d.up.length; uy /= d.up.length; lx /= d.lo.length; ly /= d.lo.length;
+    return Math.abs((lx - ux) * nx + (ly - uy) * ny) / ew;
+  }
+  function eyeWidth(P, which) {
+    const d = LIDS[which];
+    return Math.hypot(P[d.oc].x - P[d.ic].x, P[d.oc].y - P[d.ic].y) || 1;
   }
   function irisOffset(P, which, S) {
     const I = IRIS[which], d = LIDS[which];
@@ -686,16 +764,21 @@
   }
 
   const eulerYaw = q => eulerFromQuat(q).yaw;
+  /* Pose deadband in radians.  The renderer needs the same number: it holds
+     the source photo while the head is inside the band and only lets tracked
+     translation / dolly move the shell once the pose is real. */
+  const POSE_DEAD_DEG = 0.5;
+  const POSE_DEAD_RAD = POSE_DEAD_DEG * Math.PI / 180;
   const eulerYPR = q => eulerFromQuat(q);
 
   root.FMEngine = {
-    eulerYaw, eulerYPR,
+    eulerYaw, eulerYPR, POSE_DEAD_DEG, POSE_DEAD_RAD,
     /* tables + accessors */
     lx, ly, lz,
     OVAL, CONTOUR, LEYE, REYE, LBROW, RBROW, LIPS_O, LIPS_I, NOSE, UP_LIP, LO_LIP, LIDS, IRIS, EYE_RING,
     RIGID, RIGID_W, EXPR_GAIN, EXPR_CAP, ACTIONS,
     /* geometry */
-    buildCanonical, buildMesh, faceCenterOf, localUV, tmjAxis, jawWeight, applyJaw,
+    buildCanonical, buildMesh, faceCenterOf, localUV, jawWeight, applyJaw,
     /* expression */
     zeroActions, PRESETS, talkAt, expressionDelta, mouthState, makeTransfer, retargetResidual, residualEnergy,
     /* tracking */
@@ -703,6 +786,6 @@
     /* audio */
     createViseme, visemeUpdate, visemeActions,
     /* signals */
-    blendGetter, eyeOpeningRatio, irisOffset
+    blendGetter, eyeOpeningRatio, eyeWidth, irisOffset
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -45,6 +45,15 @@ FaceMirror · Continue ▶** link returns to `index.html#back`.
 * **Rigid pose / expression split.** A weighted Kabsch fit estimates yaw, pitch, roll, scale and
   translation from relatively rigid landmarks. Expression residuals are retargeted separately so a
   smile does not become head motion. Pose is projected with weak perspective and a soft yaw cap.
+* **Pose-relative deformation.** Each point is drawn as the offset between its posed and its
+  resting projection, so the shell really follows yaw/pitch/roll and expressions. Subtracting two
+  equally posed projections cancels rigid motion entirely, which froze the face while the landmark
+  overlay kept moving. Tracker translation/scale stays out of that pair on purpose: it is the
+  noisiest part of the fit, and a still head must not slide the anchored photo around.
+* **Deadbands.** Expression residuals and the rigid pose each ignore sub-pixel / sub-half-degree
+  motion. At rest the deformation is exactly zero, so the frame stays on the crisp source
+  photograph instead of repainting the whole shell from a resampled one; real motion above the band
+  is followed immediately.
 * **Triangle shell.** The source photo is mapped over a Delaunay frame/background shell plus the
   detector's facial tessellation. Painter order is carried between frames with insertion sort; if a
   turn exceeds the work budget, an allocation-free stable merge sort restores the complete order
