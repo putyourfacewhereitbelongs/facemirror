@@ -53,12 +53,30 @@ export class UI {
       <div id="fm-privacy" title="Video frames never leave this page">100% local</div>
       <div id="fm-topbar">
         <button id="fm-mirror" class="fm-big">Mirror (webcam) ⏻</button>
+        <button id="fm-face-image" class="fm-chip" disabled title="Use the current face image for likeness">Face image…</button>
+        <input id="fm-face-file" type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" hidden aria-label="Choose the face image to render">
         <button id="fm-skin" class="fm-chip" title="Project your webcam texture onto the head (M)">Mirror Skin</button>
         <button id="fm-full" class="fm-chip" title="Fullscreen">⛶</button>
         <button id="fm-hudbtn" class="fm-chip" title="Shift+D">HUD</button>
+        <button id="fm-controls" class="fm-chip" aria-controls="fm-panel" aria-expanded="true">Controls</button>
         <span id="fm-status"></span>
       </div>
       <aside id="${CONFIG.panelId}">
+        <div class="fm-section" id="fm-face-source" data-kind="generic" aria-busy="false">
+          <h3>Face likeness</h3>
+          <div class="fm-face-reference">
+            <canvas id="fm-face-preview" width="96" height="112" hidden aria-label="Current face image reference"></canvas>
+            <div><div id="fm-face-label">No face image selected</div>
+              <div id="fm-face-mode" class="fm-rec-hint">Generic preview — not your likeness</div></div>
+          </div>
+          <div class="fm-row fm-btns">
+            <button id="fm-face-choose" class="fm-chip" disabled>Choose image…</button>
+            <button id="fm-face-camera" class="fm-chip" disabled>Use webcam face</button>
+            <button id="fm-face-clear" class="fm-chip" disabled>Clear likeness</button>
+          </div>
+          <div id="fm-face-message" class="fm-rec-hint" role="status" aria-live="polite">Drop a JPEG, PNG or WebP onto the head. Use one clear, front-facing face.</div>
+          <div class="fm-rec-hint">Fits this image's proportions, skin and eyes locally. Unseen profile, ears and full hair are approximated. No uploads or saved photos.</div>
+        </div>
         <div class="fm-section">
           <h3>Emotions</h3>
           <div id="fm-chips">
@@ -111,6 +129,7 @@ export class UI {
           <h3>Help</h3>
           <div class="fm-cheat">${CHEAT.map((l) => `<div>${l}</div>`).join('')}</div>
           <button id="fm-cal" class="fm-chip">Calibrate / replay wizard (C)</button>
+          <div class="fm-rec-hint">Head scan: <a href="https://www.triplegangers.com/" target="_blank" rel="noopener">Lee Perry-Smith / Infinite Realities</a> · <a href="https://creativecommons.org/licenses/by/3.0/" target="_blank" rel="noopener">CC BY 3.0</a> · adapted for FaceMirror</div>
         </div>
       </aside>
       <div id="fm-wizard" class="fm-hidden">
@@ -132,6 +151,10 @@ export class UI {
       </div>
       <div id="${CONFIG.hudId}" class="fm-hidden"></div>
     `;
+    if (window.innerWidth < 960) {
+      this.root.querySelector('#fm-panel').classList.add('fm-collapsed');
+      this.root.querySelector('#fm-controls').setAttribute('aria-expanded', 'false');
+    }
     this._wire();
     this._buildSliders();
     this.installKeyboard();
@@ -207,9 +230,24 @@ export class UI {
   _wire() {
     const $ = (id) => this.root.querySelector(id);
     $('#fm-mirror').addEventListener('click', () => this.cb.onMirrorToggle?.());
+    for (const id of ['#fm-face-image', '#fm-face-choose']) {
+      $(id).addEventListener('click', () => $('#fm-face-file').click());
+    }
+    $('#fm-face-file').addEventListener('change', (event) => {
+      const file = event.target.files?.[0];
+      if (file) this.cb.onFaceImage?.(file);
+      event.target.value = ''; // selecting the same image again is a new source
+    });
+    $('#fm-face-camera').addEventListener('click', () => this.cb.onCameraFace?.());
+    $('#fm-face-clear').addEventListener('click', () => this.cb.onClearFace?.());
     $('#fm-skin').addEventListener('click', () => this.cb.onMirrorSkin?.());
     $('#fm-full').addEventListener('click', () => this.cb.onFullscreen?.());
     $('#fm-hudbtn').addEventListener('click', () => this.cb.onHud?.());
+    $('#fm-controls').addEventListener('click', () => {
+      const closed = $('#fm-panel').classList.toggle('fm-collapsed');
+      $('#fm-controls').setAttribute('aria-expanded', String(!closed));
+      this.cb.onLayout?.();
+    });
     for (const chip of this.root.querySelectorAll('.fm-emo')) {
       const el = /** @type {HTMLElement} */ (chip);
       const id = el.dataset.e;
@@ -347,10 +385,64 @@ export class UI {
     }
   }
 
+  setFaceAvailable(available) {
+    for (const id of ['fm-face-image', 'fm-face-choose', 'fm-face-camera']) this.root.querySelector('#' + id).disabled = !available;
+  }
+
+  setFaceBusy(busy) {
+    this.root.querySelector('#fm-face-source').setAttribute('aria-busy', String(busy));
+    if (busy) this.setFaceMessage('Fitting the current face image…');
+  }
+
+  setFaceMessage(message, error = false) {
+    const el = this.root.querySelector('#fm-face-message');
+    el.textContent = message;
+    el.classList.toggle('fm-face-error', error);
+  }
+
+  /** Draw immediately; the controller releases the full-resolution image. */
+  setFaceReference({ canvas, landmarks, label, kind }) {
+    const preview = this.root.querySelector('#fm-face-preview');
+    const source = this.root.querySelector('#fm-face-source');
+    source.dataset.kind = kind;
+    this.root.querySelector('#fm-face-label').textContent = kind === 'generic' ? 'No face image selected' : label;
+    this.root.querySelector('#fm-face-clear').disabled = kind === 'generic';
+    preview.hidden = !canvas;
+    const ctx = preview.getContext('2d');
+    ctx.clearRect(0, 0, preview.width, preview.height);
+    if (!canvas) return;
+    const left = Math.min(landmarks[234].x, landmarks[454].x);
+    const right = Math.max(landmarks[234].x, landmarks[454].x);
+    const top = landmarks[10].y, bottom = landmarks[152].y;
+    const h = (bottom - top) * canvas.height * 1.4;
+    const w = Math.max((right - left) * canvas.width * 1.25, h * preview.width / preview.height);
+    const cropH = w * preview.height / preview.width;
+    const cx = (left + right) / 2 * canvas.width;
+    const cy = (top + bottom) / 2 * canvas.height - (bottom - top) * canvas.height * 0.10;
+    ctx.fillStyle = '#1a202c'; ctx.fillRect(0, 0, preview.width, preview.height);
+    ctx.drawImage(canvas, cx - w / 2, cy - cropH / 2, w, cropH, 0, 0, preview.width, preview.height);
+  }
+
+  setFaceMode(message, active) {
+    this.root.querySelector('#fm-face-mode').textContent = message;
+    this.root.querySelector('#fm-face-source').dataset.active = String(active);
+  }
+
   /** @param {boolean} on */
   setMirrorSkin(on) {
     const el = this.root.querySelector('#fm-skin');
     if (el) el.classList.toggle('fm-active', on);
+  }
+
+  /** Webcam texture projection is a fallback feature, not a scan overlay. */
+  setMirrorSkinAvailable(available, anatomical = false) {
+    const el = this.root.querySelector('#fm-skin');
+    if (!el) return;
+    el.disabled = !available;
+    el.title = available ? (anatomical ? 'Switch to the webcam-textured procedural head (M)'
+      : 'Project your webcam texture onto the procedural head (M)')
+      : 'Custom heads keep their authored skin. Webcam motion still works.';
+    if (!available) el.classList.remove('fm-active');
   }
 
   /** @param {boolean} on */

@@ -13,3 +13,5 @@ import './channels.test.js';
 import './calibrate.test.js';
 import './recorder.test.js';
 import './smoke.test.js';
+import './anatomy.test.js';
+import './likeness.test.js';

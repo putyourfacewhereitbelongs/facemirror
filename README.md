@@ -6,11 +6,16 @@ and picking emotions. Built for a machine with **4 GB RAM and CPU-only graphics*
 motion reads as *alive* (real blinks, saccades, skin, head inertia), and nothing
 ever depends on a download beyond the app's own pinned assets.
 
-- **100% local.** Video frames never leave the page (see the badge, top-left).
+- **100% local.** Face images and video frames never leave the page. Usage
+  telemetry is disabled; photos and fitted geometry are not persisted.
 - **Zero install.** Static site, vanilla ES modules, no build step.
-- **Graceful everywhere.** No webcam → full manual mode. Missing `head.glb` →
-  procedural head + webcam "Mirror Skin". Slow machine → adaptive quality that
-  never drops the avatar below 24 fps.
+- **Anatomical by default.** Locally bundled scan-based skin, 3D ears attached
+  to the skull, separate eyes, and animated lids. No webcam → full manual mode.
+- **Image-driven likeness.** Choose or drop the active portrait to fit facial
+  proportions, skin texture and iris appearance onto the animated head.
+- **Graceful everywhere.** A custom `head.glb` overrides the built-in head.
+  Missing bundled scan → procedural head with closed 3D ears + optional webcam
+  "Mirror Skin". Adaptive quality reduces work on slower machines.
 
 ## Run it
 
@@ -25,7 +30,49 @@ allow the camera. (Webcam needs http/localhost — not `file://`.)
 
 First load is fully self-contained: three.js, MediaPipe tasks-vision wasm, and
 the 3.7 MB face-landmarker model are vendored under `vendor/` + `assets/`.
+The anatomical mesh and its skin maps add about 684 KiB, all local too.
 After that it runs offline (settings live in `localStorage`).
+
+Drag away from a facial control to turn the head: the near ear foreshortens
+and the skull naturally hides the far ear. **Controls** collapses the panel;
+it starts collapsed on narrow screens so the complete portrait stays visible.
+**Mirror Skin (M)** switches to the webcam-textured procedural head and back
+to anatomical skin; it never pastes a flat camera patch over the scan's ears.
+A custom GLB keeps its authored skin while still following webcam motion.
+
+## Likeness from the current face image
+
+Use **Face image…** or drop a JPEG, PNG or WebP onto the head (up to 12 MB).
+Choose one clear, front-facing face, with the forehead, chin and both eyes
+visible. The reference thumbnail shows the image currently driving likeness.
+Images without a usable face, multiple faces, clipped faces or strong profile
+turns are rejected without changing the last successfully fitted person.
+
+The local IMAGE detector calibrates against a neutral rendering of the bundled
+head, fits bounded facial proportions, and bakes the portrait into the existing
+UV atlas. Rest geometry, expression morphs, eyes and lids use the same fit;
+ears remain rigid. Replacements start from the original template rather than
+accumulating the previous person's shape. Head export embeds the fitted atlas.
+
+Other in-page renderers can supply their active image/canvas through the same
+pipeline, with an immediate snapshot so later redraws cannot change the source:
+
+```js
+window.dispatchEvent(new CustomEvent('facemirror:face-image', {
+  detail: { image: currentFaceCanvas, label: 'Current rendered face' },
+}));
+```
+
+Webcam motion does not overwrite a chosen image identity. **Use webcam face**
+requests a new, relaxed frontal snapshot instead. **Clear likeness** forgets
+the fitted person; normal expression reset keeps it. Images, landmarks and
+photo-derived Jacobians are session-only; reloading returns to the generic
+preview. Only an explicit head export saves the image-derived appearance.
+
+This is approximate single-view fitting, not a recovered 3D scan. Unseen
+profile, ears and full hair geometry cannot be determined from one portrait;
+source lighting/expression can remain in the texture. Use a custom head GLB
+for a production identity/expression rig.
 
 ## What's inside
 
@@ -42,7 +89,9 @@ After that it runs offline (settings live in `localStorage`).
 | `src/pose.js` | head quaternion from the transformation matrix, clamps, inertia, rubber-band drag |
 | `src/emotions.js` | 7 FACS preset vectors + cosine-similarity read-back ("Emotion read-back (local)") |
 | `src/drag.js` | click-drag editing via per-control morph Jacobian solve, undo stack |
-| `src/headAsset.js` | GLB loader (ARKit-52 name wiring) + procedural head + Mirror Skin |
+| `src/headAsset.js` | local anatomical asset + GLB loader (ARKit-52 name wiring) + procedural head + Mirror Skin |
+| `src/anatomy.js`, `src/ears.js`, `src/headShape.js` | scan adaptation, rigid ear masking, closed fallback auricles, shared facial morphs |
+| `src/faceImage.js`, `src/likeness.js`, `src/portraitTexture.js` | local image ingestion, latest-source-wins fitting, morph rebasing and exportable photo atlas |
 | `src/renderer.js` | three.js scene, studio lighting, cheap-SSS skin patch, tone mapping |
 | `src/recorder.js` | 52-ch 30 fps ring buffer, playback, `.json` / `.anim.glb` / head `.glb` export |
 | `src/perf.js` | adaptive quality governor + `Shift+D` HUD |
@@ -97,8 +146,10 @@ points); edits pin 🔒 so the camera stops overriding them.
 node --test src/tests/     # pure-math suites + headless FakeDetector smoke
 ```
 
-80 tests across One-Euro lag/jitter, spring stability, blink-scheduler
-statistics (2-minute sim), saccade main sequence, emotion classification
+114 tests across image-source validation, pose-normalized identity fitting,
+texture baking, source replacement/cancellation, ear rigidity, anatomical
+geometry and near/far-ear occlusion, One-Euro
+lag/jitter, spring stability, blink-scheduler statistics (2-minute sim), saccade main sequence, emotion classification
 (contempt ≠ joy), symmetrize, Jacobian-solver convergence, stabilizeBlink,
 dead-channel anti-gating (head rotation must not fake a jaw shift), calibration
 math, and GLB export parse-back. The smoke harness runs the full solve chain
@@ -124,6 +175,10 @@ DOM.
    <https://gltf-viewer.donmccurdy.com> (or Blender) — morphs + clip intact.
 9. Drop a head `.glb` on the canvas: warnings list any non-ARKit morph names;
    all 52 sliders still drive the head.
+10. **Turn ±70–85°**, using the webcam or holding a whole-head drag: ears stay
+    attached, the far ear disappears behind the skull, and the near ear shows
+    its bowl/rim rather than a flat oval. Smile, puff cheeks, and blink while
+    turned: neither ear stretches. Check both anatomical and Mirror Skin modes.
 
 ## Performance notes (4 GB target)
 
@@ -131,6 +186,9 @@ DOM.
   Intel UHD-class GPUs. The governor (p95 of 120 frame times) steps quality
   1.25 → 1.0 → 0.85 render scale → every-2nd-frame detection → no detail
   normal → 30 fps cap, and back up when there's headroom.
+- The anatomical head is about 20k triangles. Position/normal morph targets
+  are generated once at load; no ear repositioning, per-frame remeshing, or
+  extra rendering passes are needed.
 - All hot arrays are preallocated — no per-frame allocations in the tracker or
   solver loops (GC pauses read as face stutter on 4 GB machines).
 - Startup prints a self-check report to the console; the HUD's heap readout
@@ -142,6 +200,9 @@ DOM.
    app; the face-landmarker simply has no face to track past there.
 2. **Glasses, beards, and motion blur soften expressions** — landmark and
    blendshape quality degrade with heavy occlusion and blur.
-3. **Photoreal-scan looks need the drop-in GLB** — the app ships its decent
-   procedural fallback head plus the webcam "Mirror Skin" until you supply
-   `assets/head.glb` with ARKit-52 morphs.
+3. **Without a face source, the preview is a generic neutral scan.** Image
+   fitting derives approximate likeness, not unseen anatomy or full hair.
+   Runtime-generated expressions are approximate, with no modeled teeth/oral
+   cavity (the no-teeth jaw cap applies). Supply an ARKit-52 `assets/head.glb`
+   for a production rig. The template scan is credited to Lee Perry-Smith /
+   Infinite Realities under CC BY 3.0; see `assets/anatomical-head/README.md`.

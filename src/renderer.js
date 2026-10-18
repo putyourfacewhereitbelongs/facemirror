@@ -13,15 +13,15 @@ import { applyWeights } from './headAsset.js';
 /** @type {Record<string, number|number[]>} */
 export const CONFIG = {
   fov: 32,
-  camZ: 2.35,
+  camZ: 5.1,
   camY: 0.06,
   pixelRatioCap: 1.25,        // §7
   skinRoughness: 0.45,        // 0.35–0.55 band (§7)
   lipsClearcoat: 0.12,        // lips region only (§7)
   skinClearcoat: 0.0,
-  sssWrap: 0.45,              // N·L wrap (§7): clamp((N·L+0.45)/1.45)
-  sssFresnel: 0.18,           // (1−N·V)²·0.18·albedo·(1,0.35,0.25)
-  sssBlurMix: 0.25,           // blurred-normal mip-4 diffuse trick (§7)
+  sssWrap: 0.22,              // subtle diffuse wrap: (N·L+0.22)/1.22
+  sssFresnel: 0.055,          // restrained warm grazing-angle scatter
+  sssBlurMix: 0.12,           // blurred-normal mip-4 diffuse trick (§7)
   keyIntensity: 0.95,         // warm key, 55° cone
   keyAngleDeg: 55,
   fillIntensity: 0.35,        // cool fill
@@ -40,7 +40,7 @@ export const CONFIG = {
  */
 export function applySkinSSS(material) {
   material.onBeforeCompile = (shader) => {
-    // 1) Wrap lighting: diffuse N·L → clamp((N·L+0.45)/1.45, 0, 1).
+    // 1) Subtle diffuse wrap. Too much washes out the ear's cartilage folds.
     //    Half-Lambert wrap fakes shallow light bleed under the skin with no
     //    extra passes. NOTE: onBeforeCompile runs BEFORE #include expansion,
     //    so we patch the chunk template itself and inline it (a plain string
@@ -60,13 +60,17 @@ export function applySkinSSS(material) {
     shader.fragmentShader = shader.fragmentShader.replace(
       '#include <normal_fragment_maps>',
       `#include <normal_fragment_maps>
-      #ifdef USE_NORMALMAP
-        vec3 sssBlurN = normalize( textureLod( normalMap, vNormalMapUv, 4.0 ).xyz * 2.0 - 1.0 );
+      #ifdef USE_NORMALMAP_TANGENTSPACE
+        vec3 sssBlurMapN = textureLod( normalMap, vNormalMapUv, 4.0 ).xyz * 2.0 - 1.0;
+        sssBlurMapN.xy *= normalScale;
+        // Keep BOTH normals in view space. Mixing a tangent-space texture
+        // directly into the view normal made ear lighting swim during turns.
+        vec3 sssBlurN = normalize( tbn * sssBlurMapN );
         normal = normalize( mix( normal, sssBlurN, ${CONFIG.sssBlurMix} ) );
       #endif`
     );
-    // 3) Red-tint fresnel glow: (1−N·V)²·0.18·albedo·(1,0.35,0.25) — the
-    //    ear/nose-lit-up look. `outgoingLight` is in scope right before
+    // 3) Restrained warm fresnel scatter, not an emissive-looking red rim.
+    //    `outgoingLight` is in scope right before
     //    <opaque_fragment> in the main() assembly.
     shader.fragmentShader = shader.fragmentShader.replace(
       '#include <opaque_fragment>',
@@ -75,7 +79,7 @@ export function applySkinSSS(material) {
       #include <opaque_fragment>`
     );
   };
-  material.customProgramCacheKey = () => 'facemirror-sss-v1';
+  material.customProgramCacheKey = () => 'facemirror-sss-v2';
 }
 
 /**
@@ -196,6 +200,8 @@ export class Stage {
     this.asset = null;
     this.renderScale = 1;
     this._t = 0;
+    this.dolly = 1;
+    this.baseCameraZ = CONFIG.camZ;
   }
 
   /**
@@ -223,17 +229,64 @@ export class Stage {
   setHead(asset) {
     if (this.asset) this.headNode.remove(this.asset.root);
     this.asset = asset;
-    // Assign skin/lips materials to meshes that come with none (procedural)
-    // or a neutral default (GLB without materials).
-    for (const mesh of asset.meshes) {
-      if (!mesh.material || (mesh.material.isMeshStandardMaterial && !mesh.material.map)) {
-        mesh.material = Array.isArray(mesh.material) ? mesh.material : this.skinMat;
+    // Only fill empty/explicit skin slots. A custom GLB's untextured eyes,
+    // cartilage, or lips are authored materials, not "missing" skin maps.
+    asset.root.traverse((mesh) => {
+      if (!mesh.isMesh) return;
+      if (!mesh.material || mesh.userData.skin) mesh.material = this.skinMat;
+      if (mesh.userData.lips) mesh.material = this.lipsMat;
+      for (const material of (Array.isArray(mesh.material) ? mesh.material : [mesh.material])) {
+        if (material?.userData.skin) applySkinSSS(material);
       }
-      if (mesh.material && mesh.material.isMeshStandardMaterial && mesh.userData?.lips) {
-        mesh.material = this.lipsMat;
-      }
-    }
+    });
     this.headNode.add(asset.root);
+  }
+
+  /**
+   * Canonical, neutral view for photo-to-head correspondence. Render a clone
+   * to a temporary target, never the live canvas: a turned/blinking avatar
+   * must not become the reference for the next person's face. The clone shares
+   * GPU resources and does not change the live pose, viewport, or expression.
+   */
+  captureNeutralHead(asset, size = 512) {
+    if (!this.renderer) throw new Error('Photo likeness needs WebGL');
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x616773);
+    scene.environment = this.env;
+    for (const light of this.scene.children) if (light.isLight) scene.add(light.clone());
+    const head = asset.root.clone(true);
+    head.position.set(0, 0, 0);
+    head.quaternion.identity();
+    head.traverse((obj) => {
+      if (obj.morphTargetInfluences) obj.morphTargetInfluences.fill(0);
+      if (/^(left|right)Eye$/.test(obj.name)) obj.quaternion.identity();
+    });
+    scene.add(head);
+    const camera = new THREE.PerspectiveCamera(CONFIG.fov, 1, 0.1, 40);
+    camera.position.set(0, 0, CONFIG.camZ);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld(true);
+    const target = new THREE.WebGLRenderTarget(size, size);
+    target.texture.colorSpace = THREE.SRGBColorSpace;
+    const previous = this.renderer.getRenderTarget();
+    const pixels = new Uint8Array(size * size * 4);
+    try {
+      this.renderer.setRenderTarget(target);
+      this.renderer.render(scene, camera);
+      this.renderer.readRenderTargetPixels(target, 0, 0, size, size, pixels);
+    } finally {
+      this.renderer.setRenderTarget(previous);
+      target.dispose();
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    const image = ctx.createImageData(size, size);
+    for (let y = 0; y < size; y++) {
+      image.data.set(pixels.subarray((size - 1 - y) * size * 4, (size - y) * size * 4), y * size * 4);
+    }
+    ctx.putImageData(image, 0, 0);
+    return { canvas, camera, head };
   }
 
   /**
@@ -261,11 +314,23 @@ export class Stage {
   /**
    * Resize.
    * @param {number} w @param {number} h
+   * @param {number} [coveredRight] controls panel width in canvas pixels
    */
-  resize(w, h) {
+  resize(w, h, coveredRight = 0) {
     if (this.renderer) this.renderer.setSize(w, h, false);
     this.camera.aspect = w / Math.max(h, 1);
+    // Off-axis framing keeps the portrait (and both ears) out from behind
+    // the controls, without rotating the head toward the side of the screen.
+    this.camera.setViewOffset(w, h, coveredRight / 2, 0, w, h);
+    const visibleAspect = Math.max(0.25, (w - coveredRight) / Math.max(h, 1));
+    this.baseCameraZ = Math.max(CONFIG.camZ, 0.90 / (Math.tan(CONFIG.fov * Math.PI / 360) * visibleAspect) + 0.75);
+    this.setDolly(this.dolly);
     this.camera.updateProjectionMatrix();
+  }
+
+  setDolly(scale) {
+    this.dolly = scale;
+    this.camera.position.z = this.baseCameraZ * scale;
   }
 
   /**

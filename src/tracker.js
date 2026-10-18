@@ -12,10 +12,10 @@ import { CHANNELS, CH } from './rig.js';
 /** @type {Record<string, any>} */
 export const CONFIG = {
   // Local-first for offline (§0.4); CDN only as fallback (§0.3 pins).
-  visionModule: './vendor/tasks-vision/vision_bundle.mjs',
+  visionModule: new URL('../vendor/tasks-vision/vision_bundle.mjs', import.meta.url).href,
   visionModuleCdn: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.0/vision_bundle.mjs',
-  wasmLocal: './vendor/tasks-vision/wasm',
-  modelLocal: './assets/face_landmarker.task',
+  wasmLocal: new URL('../vendor/tasks-vision/wasm', import.meta.url).href,
+  modelLocal: new URL('../assets/face_landmarker.task', import.meta.url).href,
   modelCdn: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
   constraints: {
     audio: false,
