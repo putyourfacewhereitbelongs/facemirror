@@ -82,39 +82,88 @@
     wireControls();
     setStatus('Loading the face model…');
     try {
-      const fileset = await vision.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
-      const faceModel = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
-      const makeFace = async (mode) => {
-        for (const delegate of ['GPU', 'CPU']) {
-          try {
-            return await vision.FaceLandmarker.createFromOptions(fileset, {
-              baseOptions: { modelAssetPath: faceModel, delegate },
-              runningMode: mode, numFaces: 1, outputFaceBlendshapes: mode === 'VIDEO'
-            });
-          } catch (e) { if (delegate === 'CPU') throw e; }
+      // The default puppet page should keep working when a CDN is down or
+      // blocked. Prefer the exact runtime/WASM/model shipped with this repo;
+      // retain a pinned CDN pair as a recovery path for incomplete deployments.
+      const sources = [
+        {
+          wasm: './vendor/tasks-vision/wasm',
+          faceModel: './assets/face_landmarker.task',
+          filesetPromise: null
+        },
+        {
+          wasm: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.0/wasm',
+          faceModel: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+          filesetPromise: null
         }
+      ];
+      const getFileset = (source) => {
+        source.filesetPromise ??= vision.FilesetResolver.forVisionTasks(source.wasm);
+        return source.filesetPromise;
+      };
+      let activeSource = null;
+      const orderedSources = () => activeSource
+        ? [activeSource, ...sources.filter((source) => source !== activeSource)]
+        : sources;
+      const makeFace = async (mode) => {
+        let lastError = null;
+        for (const source of orderedSources()) {
+          let fileset;
+          try { fileset = await getFileset(source); }
+          catch (e) { lastError = e; continue; }
+          for (const delegate of ['GPU', 'CPU']) {
+            try {
+              const task = await vision.FaceLandmarker.createFromOptions(fileset, {
+                baseOptions: { modelAssetPath: source.faceModel, delegate },
+                runningMode: mode, numFaces: 1, outputFaceBlendshapes: mode === 'VIDEO'
+              });
+              activeSource = source;
+              return task;
+            } catch (e) { lastError = e; }
+          }
+        }
+        throw lastError || new Error('No MediaPipe runtime/model source could be loaded');
       };
       A.faceImg = await makeFace('IMAGE');
       A.faceVid = await makeFace('VIDEO');
-      try {
-        const poseModel = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
-        const mk = async (mode) => {
-          for (const delegate of ['GPU', 'CPU']) {
-            try {
-              return await vision.PoseLandmarker.createFromOptions(fileset, { baseOptions: { modelAssetPath: poseModel, delegate }, runningMode: mode, numPoses: 1 });
-            } catch (e) { if (delegate === 'CPU') throw e; }
-          }
-        };
-        A.poseImg = await mk('IMAGE');
-        A.poseVid = await mk('VIDEO');
-      } catch (e) { A.poseErr = e && e.message; }
+
+      // Pose/shoulder tracking is optional. Start it in the background so a
+      // slow/unreachable pose-model CDN can never hold the face controls or
+      // webcam button hostage.
+      const loadPose = async () => {
+        try {
+          const poseModel = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
+          const makePose = async (mode) => {
+            let lastError = null;
+            for (const source of orderedSources()) {
+              let fileset;
+              try { fileset = await getFileset(source); }
+              catch (e) { lastError = e; continue; }
+              for (const delegate of ['GPU', 'CPU']) {
+                try {
+                  const task = await vision.PoseLandmarker.createFromOptions(fileset, {
+                    baseOptions: { modelAssetPath: poseModel, delegate }, runningMode: mode, numPoses: 1
+                  });
+                  activeSource = source;
+                  return task;
+                } catch (e) { lastError = e; }
+              }
+            }
+            throw lastError || new Error('Pose model unavailable');
+          };
+          A.poseImg = await makePose('IMAGE');
+          A.poseVid = await makePose('VIDEO');
+        } catch (e) { A.poseErr = e && e.message; }
+      };
+
       const cb = $('camBtn');
       if (cb) cb.disabled = false;
       setStatus('Ready. Start the webcam, then choose a photo (or snapshot yourself).');
       requestAnimationFrame(tick);
+      void loadPose();
     } catch (e) {
       A.err = e;
-      setStatus('Could not load the face model: ' + (e && e.message) + ' — this page needs cdn.jsdelivr.net and storage.googleapis.com.');
+      setStatus('Could not load the local or CDN face model: ' + (e && e.message) + ' — serve the app over HTTP(S) and check that its face-model assets are available.');
       requestAnimationFrame(tick);
     }
   }

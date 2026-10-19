@@ -1,7 +1,9 @@
 # Third-party notices
 
-FaceMirror-3D vendors its runtime dependencies so the app runs offline after
-the first load and never depends on a live download.
+The repository vendors the runtime dependencies used by both the default
+2.5D puppet and FaceMirror-3D Studio. Core face tracking can therefore start
+without relying on a live CDN; the puppet's optional shoulder/body tracker is
+loaded separately and may be unavailable without stopping face animation.
 
 ## three.js (0.186.1) — MIT License
 
@@ -21,6 +23,12 @@ Copyright © Google LLC. <https://github.com/google-ai-edge/mediapipe>
 3,758,596 bytes, sha256
 `64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff`.
 <https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task>
+
+## Delaunator 5.1.0 — ISC License
+
+Vendored at `vendor/delaunator.min.js` for the default puppet page.
+The matching license is included at `vendor/DELAUNATOR-LICENSE.txt`.
+Copyright © 2026 Mapbox. <https://github.com/mapbox/delaunator>
 
 ## stabilizeBlink math
 
