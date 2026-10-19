@@ -1,17 +1,22 @@
 {
-  "name": "facemirror",
-  "private": true,
+  "name": "facemirror-3d",
   "version": "1.0.0",
+  "private": true,
   "type": "module",
-  "description": "FaceMirror: webcam-driven 2.5D portrait puppet (MediaPipe 478-point mesh, rigid head pose, procedural oral cavity).",
+  "description": "Realistic webcam-driven 3D face avatar + face editor, with the legacy 2.5D photo puppet kept at puppet.html.",
   "scripts": {
-    "build": "node tools/build.mjs",
-    "check": "node tools/build.mjs --check",
-    "verify": "node tools/verify.mjs",
-    "harness": "node tools/build.mjs && node tools/harness.mjs",
-    "test": "node tools/build.mjs --check && node tools/verify.mjs && node tools/harness.mjs",
-    "dev": "node tools/build.mjs && node tools/serve.mjs",
-    "serve": "node tools/serve.mjs"
+    "test": "npm run test:3d && npm run test:puppet",
+    "test:3d": "node --test src/tests/",
+    "test:puppet": "node tools/build.mjs --check && node tools/verify.mjs && node tools/harness.mjs",
+    "check": "for f in src/*.js src/puppet/*.js tools/*.mjs; do node --check \"$f\" || exit 1; done && node tools/build.mjs --check",
+    "check:3d": "for f in src/*.js; do node --check \"$f\" || exit 1; done",
+    "check:puppet": "node tools/build.mjs --check",
+    "build:puppet": "node tools/build.mjs",
+    "verify:puppet": "node tools/verify.mjs",
+    "harness:puppet": "node tools/build.mjs && node tools/harness.mjs",
+    "dev:puppet": "node tools/build.mjs && node tools/serve.mjs",
+    "serve:puppet": "node tools/serve.mjs",
+    "serve": "python3 -m http.server 8010"
   },
   "dependencies": {
     "delaunator": "^5.0.1"
