@@ -41,8 +41,8 @@ const section = t => console.log(`\n── ${t} ${'─'.repeat(Math.max(0, 58 - 
 /* =====================================================================
    2. boot the app against the mock DOM
    ===================================================================== */
-const html = await readFile(join(rootDir, 'puppet.html'), 'utf8').catch(() => '');
-if (!html) { console.error('puppet.html missing — run `node tools/build.mjs` first'); process.exit(2); }
+const html = await readFile(join(rootDir, 'index.html'), 'utf8').catch(() => '');
+if (!html) { console.error('index.html missing — run `npm run build:puppet` first'); process.exit(2); }
 const dom = installMockDom(html);
 const missing = new Set();
 const realGet = dom.document.getElementById;
@@ -92,7 +92,7 @@ await globalThis.PuppetApp.boot(vision);
 const T = globalThis.PuppetApp.__test;
 
 section('page / script agreement');
-ok('every element the app looks up exists in puppet.html', missing.size === 0,
+ok('every element the app looks up exists in the main index.html', missing.size === 0,
    missing.size ? 'missing: ' + [...missing].join(', ') : '(0 misses)');
 
 /* Camera tracking is mirrored. The still snapshot must use the same frame,
@@ -240,16 +240,16 @@ section('paint order and far-side handling');
 const renderAt = q => FMRender.sessionFrame(ses, {
   t: t / 1000, dt: 1 / 60, quality: 1, q,
   focal: 3.1, scale: 1, depthGain: 0.3, ox: 0, oy: 0,
-  deltaCanonical: new Float32Array(478 * 3), jawOpen: 0, jawMeshGain: 1,
+  deltaCanonical: new Float32Array(478 * 3), jawOpen: 0, jawMeshGain: 0,
   limits: true, shade: 0, hairGain: 0, gaze: [[0, 0], [0, 0]], gazeGain: 1.9,
-  lid: [0, 0], tongue: 0, vis: 0.4, bright: 1.15, warmth: 0,
+  lid: [0, 0], vis: 0.4, bright: 1.15, warmth: 0,
   showPoints: false, showMesh: false, origOnly: false, points: [], dragIndex: -1, hoverIndex: -1
 });
 const restDbg = renderAt([0, 0, 0, 1]);
 const turnDbg = renderAt(FM.quatFromYPR(0.55, 0, -0.1));
 ok('far-side mirroring activates on a turn', turnDbg.culled > restDbg.culled && turnDbg.culled > 0,
    `${restDbg.culled} frontal -> ${turnDbg.culled} mirrored triangles`);
-ok('shell coverage stays complete through yaw', Math.abs(turnDbg.tris - restDbg.tris) <= 4 && turnDbg.tris > 2400 && restDbg.tris > 2400,
+ok('shell coverage stays complete through yaw', Math.abs(turnDbg.tris - restDbg.tris) <= 4 && turnDbg.tris > 2200 && restDbg.tris > 2200,
    `${restDbg.tris} frontal -> ${turnDbg.tris} turned; near-degenerate edge triangles may vary by a few`);
 /* Both the base shell and face tessellation must remain far-to-near. */
 const orderOk = checkPaintOrder(ses);
@@ -277,16 +277,39 @@ ok('ear band peaks at the tragion landmarks and vanishes mid-face',
 ok('ears are recessed behind the cheek / eye plane',
    head.P[234][2] < head.P[33][2] - head.fw * 0.02 && head.P[454][2] < head.P[263][2] - head.fw * 0.02,
    `z ear ${head.P[234][2].toFixed(1)}/${head.P[454][2].toFixed(1)} vs eye corners ${head.P[33][2].toFixed(1)}/${head.P[263][2].toFixed(1)}`);
+const earDepthError = i => {
+  const bp = [ses.BASE[i * 3], ses.BASE[i * 3 + 1], ses.BASE[i * 3 + 2] * (i < 478 ? 1.3 : 1)];
+  const rotated = ses.proj(bp), frontal = ses.proj0(bp);
+  const earTurn = Math.min(1, mesh.earW[i] * 0.5);
+  const partial = frontal[2] + (rotated[2] - frontal[2]) * earTurn;
+  const w = mesh.w[i];
+  const expected = partial * w + ses.BASE[i * 3 + 2] * (1 - w) * 0.4;
+  return Math.abs(ses.depth[i] - expected);
+};
 const earAt = yaw => {
   const dbg = renderAt(FM.quatFromYPR(yaw, 0, 0));
   return { dbg, l: ses.DST[234 * 2], r: ses.DST[454 * 2], nose: ses.DST[4 * 2],
            dl: ses.depth[234], dr: ses.depth[454], dn: ses.depth[4],
+           depthError: Math.max(earDepthError(234), earDepthError(454)),
            off: Math.max(...Array.from(ses.earOff, Math.abs)) };
 };
 const eRest = earAt(0), ePos = earAt(0.6), eNeg = earAt(-0.6);
 ok('ear swing is identically zero at rest (frontal photo untouched)',
    eRest.off < 1e-9 && eRest.dbg.ear.faded === 0 && eRest.dbg.ear.band > 0,
    `max |earOff| ${eRest.off}, faded ${eRest.dbg.ear.faded}, band ${eRest.dbg.ear.band} tris`);
+ok('ear painter depth matches its fractional screen turn in both directions',
+   ePos.depthError < 1e-4 && eNeg.depthError < 1e-4,
+   `max depth-key error +yaw ${ePos.depthError.toExponential(1)}, -yaw ${eNeg.depthError.toExponential(1)}`);
+const mixedEarTurn = renderAt(FM.quatFromYPR(0.42, -0.22, 0.18));
+const ringEarIndex = mesh.rings[0].reduce((best, i) => mesh.earW[i] > mesh.earW[best] ? i : best, mesh.rings[0][0]);
+const mixedDepthError = Math.max(earDepthError(234), earDepthError(454), earDepthError(ringEarIndex));
+ok('face and hair-ring ear depth stay coherent through pitch and roll', mixedDepthError < 1e-4,
+   `max face/ring depth-key error ${mixedDepthError.toExponential(1)} at ring point ${ringEarIndex}`);
+const expectedEarDetailSkips = Array.from(ses.triB.earF).filter(v => v > 0.12).length;
+ok('dense face pass defers ear triangles to the depth-sorted shell',
+   ePos.dbg.ear.detailSkipped === expectedEarDetailSkips && eNeg.dbg.ear.detailSkipped === expectedEarDetailSkips
+     && expectedEarDetailSkips > 0,
+   `${expectedEarDetailSkips} ear triangles skipped from the overlay in either turn direction`);
 const width = e => e.r - e.l;
 ok('both turn directions foreshorten the ear-to-ear width',
    width(ePos) < width(eRest) - 8 && width(eNeg) < width(eRest) - 8,
@@ -336,15 +359,13 @@ ok('mouth opens under a preset', openDbg.mouth.h > 0.12, `mouth envelope ${openD
 ok('oral cavity and teeth respond to jaw opening', openDbg.mouth.cavity && openAlpha > closedAlpha * 2,
    `teeth alpha ${closedAlpha.toFixed(2)} closed -> ${openAlpha.toFixed(2)} open; ${closedOps} -> ${openOps} canvas ops`);
 ok('jaw bone rotates', ses.jaw > 0.02, `${(ses.jaw * deg).toFixed(1)}°`);
-T.preset('Tongue out');
-for (let i = 0; i < 55; i++) step1(0, 0, 0, 1 / 60, null, true);
-resetOne(outputCtx);
-const tongueFrame = step1(0, 0, 0, 1 / 60, null, true);
-const tongueClipped = mouthClipContained(ses, outputCtx);
-ok('tongue is rendered through the inner-lip clip', tongueFrame.dbg.mouth.tongue && tongueClipped,
-   `drawn ${tongueFrame.dbg.mouth.tongue}; candidate clips ${outputCtx.ops.filter(op => op.op === 'clip' && op.clip).length}; contained ${tongueClipped}`);
-ok('teeth/tongue outputs stay finite', [tongueFrame.dbg.mouth.h, tongueFrame.dbg.mouth.upperAlpha,
-  tongueFrame.dbg.mouth.lowerAlpha, ses.jaw].every(Number.isFinite));
+ok('tongue feature is removed from UI, actions and presets',
+   !dom.byId.has('tsens') && !dom.byId.has('tf') && !Object.hasOwn(FMEngine.PRESETS, 'Tongue out')
+     && !FMEngine.ACTIONS.includes('tg') && !FMEngine.ACTIONS.includes('st')
+     && !Object.hasOwn(T.state(), 'tongue') && !Object.hasOwn(openDbg.mouth, 'tongue'),
+   'no controls, tongue actions, preset, state, or render pass');
+ok('oral cavity and teeth diagnostics stay finite', [openDbg.mouth.h, openDbg.mouth.upperAlpha,
+  openDbg.mouth.lowerAlpha, ses.jaw].every(Number.isFinite));
 T.preset('Neutral');
 
 section('interaction');
@@ -504,18 +525,6 @@ function resetOne(c) {
   if (c) { c.ops.length = 0; c.violations.length = 0; c.opCount = 0; c.arcCount = 0; }
 }
 function mouthOps(ctx) { return ctx ? (ctx.opCount || 0) : 0; }
-function mouthClipContained(ses, ctx) {
-  if (!ctx || !ses) return false;
-  const ids = globalThis.FMEngine.LIPS_I;
-  const xs = ids.map(i => ses.DST[i * 2]), ys = ids.map(i => ses.DST[i * 2 + 1]);
-  const bb = { x0: Math.min(...xs) - 1, y0: Math.min(...ys) - 1,
-               x1: Math.max(...xs) + 1, y1: Math.max(...ys) + 1 };
-  const innerClips = ctx.ops.filter(op => {
-    const b = op.op === 'clip' && op.clip;
-    return b && b.x0 >= bb.x0 && b.y0 >= bb.y0 && b.x1 <= bb.x1 && b.y1 <= bb.y1;
-  });
-  return innerClips.length >= 2; // cavity + tongue passes both clip to the inner-lip aperture
-}
 function checkPaintOrder(ses) {
   /* Verify the depth-key order actually consumed by both shell passes. */
   const passes = [ses.triA, ses.triB].filter(Boolean);

@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Trill Face Puppet · 3D head turn, rigid teeth, audio visemes</title>
-<meta name="description" content="Drive a still photograph from a webcam face mesh: perspective head rotation, mirrored-source far-side approximation, painter-sorted shell warping, procedural dental arches and tongue, audio visemes, PNG capture and WebM recording." />
+<meta name="description" content="Drive a still photograph from a webcam face mesh: perspective head rotation, mirrored-source far-side approximation, painter-sorted shell warping, procedural dental arches, audio visemes, PNG capture and WebM recording." />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🎭</text></svg>" />
 <style>
 :root{--bg:#0d0f14;--card:#161a22;--card2:#1b202a;--fg:#e8eaf0;--mut:#8b93a7;--acc:#5eead4;--acc2:#f472b6;--line:#272c38}
@@ -52,13 +52,13 @@ details[open]>summary::before{content:"▾"}
 </style>
 </head>
 <body>
-<a class="backlink" href="index.html#back" id="contLink">◀ Back to FaceMirror · Continue ▶</a>
+<a class="backlink" href="studio.html" id="contLink">◀ Open FaceMirror-3D Studio</a>
 <h1>Trill <em>Face Puppet</em></h1>
 <p class="sub">
   A still photo becomes a 2.5D facial shell: 478 landmarks lifted into canonical head space, three hair rings and a pinned
   frame around them. Your webcam face mesh drives it with a weighted Kabsch fit — pose is separated from expression so a
   smile stays on the face while the head turns. The unseen far side is approximated from mirrored photo patches rather
-  than generated; the oral cavity uses a rigid jaw, procedural dental arches and a textured tongue. Drag a dot to sculpt,
+  than generated; the oral cavity uses a rigid jaw and procedural dental arches. Drag a dot to sculpt,
   or select Smile, Frown or Mouth O and click the face.
 </p>
 
@@ -112,7 +112,6 @@ details[open]>summary::before{content:"▾"}
     <label class="rng">Smoothing (more = calmer) <output></output><input id="sm" type="range" min="0" max="1" step="0.05" value="0.72"></label>
     <label class="rng">Blink sensitivity <output></output><input id="bl" type="range" min="0.5" max="1.5" step="0.05" value="1"></label>
     <label class="rng">Eye gaze gain <output></output><input id="gg" type="range" min="0.5" max="2.5" step="0.05" value="1.7"></label>
-    <label class="rng">Tongue sensitivity <output></output><input id="tsens" type="range" min="0.5" max="3" step="0.05" value="1.4"></label>
     <label class="rng">3D depth (head turn) <output></output><input id="dp" type="range" min="0.5" max="2" step="0.05" value="1.3"></label>
     <label class="rng">Focal length (perspective) <output></output><input id="focal" type="range" min="1.8" max="6" step="0.1" value="3.1"></label>
     <label class="rng">Head-turn shading <output></output><input id="fs" type="range" min="0" max="1" step="0.05" value="0.35"></label>
@@ -122,7 +121,6 @@ details[open]>summary::before{content:"▾"}
     <label class="rng">Drag area (neighbours follow) <output></output><input id="da" type="range" min="0" max="2" step="0.05" value="1"></label>
     <label class="rng">Max mouth opening <output></output><input id="mo" type="range" min="0.3" max="0.9" step="0.02" value="0.72"></label>
     <label class="chk"><input id="lim" type="checkbox" checked> Anatomical limits (lids / lips can't invert)</label>
-    <label class="chk"><input id="tf" type="checkbox"> Force tongue out (or hold T)</label>
   </div>
 </details>
 
@@ -168,7 +166,7 @@ details[open]>summary::before{content:"▾"}
 <script data-src="src/math.js">
 /* =====================================================================
    FaceMirror · pure math core  (no DOM, no canvas)
-   Loaded as a classic script in the browser and inlined into puppet.html.
+   Loaded as a classic script in the browser and inlined into index.html + puppet.html.
    Exposed on globalThis.FM so both the app module and the Node test
    harness (tools/verify.mjs) can exercise exactly the same code.
 
@@ -680,7 +678,7 @@ details[open]>summary::before{content:"▾"}
     }
     return out;
   }
-  /* Catmull-Rom arc between three points, used by the tongue/teeth paths */
+  /* Quadratic Bezier point through endpoints a/c with control point b. */
   function quadPoint(a, b, c, t) {
     const u = 1 - t;
     return [u * u * a[0] + 2 * u * t * b[0] + t * t * c[0], u * u * a[1] + 2 * u * t * b[1] + t * t * c[1]];
@@ -751,7 +749,7 @@ details[open]>summary::before{content:"▾"}
   if (!FM) throw new Error('FaceMirror engine: src/math.js must load first');
   const { clamp, clamp01, lerp, smoothstep, softLimit, slew, envelope, oneEuro, oneEuroRun, oneEuroReset,
           kabsch, v3, m3, quatFromMat, matFromQuat, quatFromYPR, eulerFromQuat, quatSlerp, quatAngle,
-          quatSlew, quatFollow, quatNorm, ratioTracker, ratioTrack, splineClosed, polyArea, bounds } = FM;
+          quatSlew, quatFollow, quatNorm, ratioTracker, ratioTrack } = FM;
 
   /* ===================================================================
      1. Landmark tables (MediaPipe Face Mesh, 478 points)
@@ -768,7 +766,7 @@ details[open]>summary::before{content:"▾"}
   const LIPS_I = [78, 82, 13, 312, 308, 317, 14, 87];
   const NOSE = [168, 6, 197, 195, 5, 4, 1, 19, 94, 2, 98, 327, 129, 358, 219, 439, 218, 438, 115, 344,
     49, 279, 48, 278, 64, 294, 102, 331, 128, 357, 114, 343, 217, 437];
-  /* upper / lower inner lip run (used to hang teeth and the tongue) */
+  /* upper / lower inner lip runs used by the dental arch and mouth limits */
   const UP_LIP = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308];
   const LO_LIP = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308];
   const LIDS = { L: { up: [159, 158, 160, 161, 157], lo: [145, 153, 144, 154, 163], ic: 133, oc: 33 },
@@ -1058,7 +1056,7 @@ details[open]>summary::before{content:"▾"}
      the head turns instead of smearing across the screen.
      =================================================================== */
   const ACTIONS = ['sL', 'sR', 'j', 'bu', 'buR', 'bi', 'bd', 'eo', 'sq', 'dr', 'pk', 'fr', 'nz', 'ur',
-                   'st', 'bL', 'bR', 'tg', 'gx', 'gy', 'ck', 'wv'];
+                   'bL', 'bR', 'gx', 'gy', 'ck', 'wv'];
   const zeroActions = () => { const o = {}; for (const k of ACTIONS) o[k] = 0; return o; };
   const PRESETS = {
     'Neutral': {},
@@ -1069,13 +1067,12 @@ details[open]>summary::before{content:"▾"}
     'Sad': { fr: 0.72, bi: 0.9, dr: 0.3, j: 0.04, gy: 0.8 },
     'Angry': { bd: 0.9, fr: 0.5, sq: 0.3, nz: 0.35, ur: 0.15 },
     'Surprised': { bu: 0.9, eo: 0.85, j: 0.5 },
-    'Fear': { bu: 0.55, bi: 0.7, eo: 0.75, j: 0.28, st: 0.7 },
+    'Fear': { bu: 0.55, bi: 0.7, eo: 0.75, j: 0.28 },
     'Disgust': { nz: 0.9, ur: 0.7, bd: 0.35, fr: 0.35, sq: 0.25 },
     'Skeptical': { buR: 0.8, bd: 0.25, sR: 0.28, dr: 0.15 },
     'Sleepy': { dr: 0.68, j: 0.1 },
     'Wink': { bL: 1, sL: 0.45, sR: 0.45, sq: 0.1 },
     'Kiss': { pk: 1, bu: 0.1 },
-    'Tongue out': { tg: 1, j: 0.3 },
     'Look left': { gx: -1 }, 'Look right': { gx: 1 }, 'Look up': { gy: -1 }, 'Look down': { gy: 1 },
     'Talking': null
   };
@@ -1085,14 +1082,13 @@ details[open]>summary::before{content:"▾"}
     const e = clamp01(Math.sin(t * 0.72) * 3 + 1.15);
     const g = t * 4.3, k = Math.floor(g), f = g - k;
     const o = Math.pow(Math.sin(Math.PI * f), 0.7) * e;
-    const h = s(k, 0), h2 = s(k, 3.1);
+    const h = s(k, 0);
     const round = h > 0.68;
     return {
       j: o * (0.10 + 0.42 * h),                       // jaw open, vowel height
       pk: round ? o * 0.85 : o * 0.12,                // rounded vowels
-      st: h2 < 0.26 ? o * 0.6 : 0,                    // tongue tip for dentals
       sL: 0.10 + 0.12 * h, sR: 0.10 + 0.12 * h,       // mouth corners spread
-      bu: e * 0.10 * h2, ck: 0.2
+      bu: e * 0.10 * s(k, 3.1), ck: 0.2
     };
   }
   /* Build the per-landmark 3D expression delta (canonical px units). */
@@ -1118,7 +1114,7 @@ details[open]>summary::before{content:"▾"}
         const up = 1 - lift;
         const smileAmt = sm * mouthMask;
         dy += (-smileAmt * fh * 0.20 * au * au * up - A.fr * fh * 0.16 * au * au * up);
-        dx += u * (smileAmt * 0.09 + A.st * 0.14) * fw * au * mouthMask;
+        dx += u * smileAmt * 0.09 * fw * au * mouthMask;
         dy += A.ur * fh * 0.10 * up * (1 - au * 0.5);
         dz += (A.eo * 0.35 + A.pk * 0.55) * fw * 0.06 * mouthMask;
         /* pucker: lips gather toward the mouth axis and curl outward */
@@ -1158,7 +1154,7 @@ details[open]>summary::before{content:"▾"}
     }
     return d;
   }
-  /* mouth-shape readout from the current photo mesh (drives teeth/tongue) */
+  /* mouth-shape readout from the current photo mesh (drives the teeth) */
   function mouthState(head, D, idx) {
     const g = (a, b) => Math.hypot(D[a].x - D[b].x, D[a].y - D[b].y);
     const mw = g(61, 291) || head.fw * 0.4;
@@ -1203,8 +1199,8 @@ details[open]>summary::before{content:"▾"}
 
   /* ===================================================================
      6. Rigid mandible (TMJ hinge) + linear blend skinning
-     The jaw, lower teeth, tongue and chin share one bone, so an open
-     mouth never looks like a vertical smear.
+     The jaw, lower teeth and chin share one bone, so an open mouth never
+     looks like a vertical smear.
      =================================================================== */
   function tmjAxis(head) {
     /* hinge roughly 6% of face width above the mouth, passing through the
@@ -1378,12 +1374,12 @@ details[open]>summary::before{content:"▾"}
   /* ===================================================================
      8. Viseme / audio driver  (mic amplitude + spectral shape)
      A miniature of the audio->viseme front ends (SadTalker/Wav2Lip use a
-     learned encoder): we band-limit the spectrum into four viseme
-     classes and drive jaw, pucker, spread and tongue with envelopes.
+     learned encoder): we band-limit the spectrum into viseme classes and
+     drive jaw, pucker and spread with envelopes.
      =================================================================== */
   function createViseme() {
     return {
-      env: 0, open: 0, round: 0, wide: 0, tip: 0, tone: 0,
+      env: 0, open: 0, round: 0, wide: 0, tone: 0,
       bands: [0, 0, 0, 0], t: 0, active: false
     };
   }
@@ -1398,14 +1394,13 @@ details[open]>summary::before{content:"▾"}
     };
     const lo = band(120, 700);      // F1 zone -> jaw / open vowels
     const mid = band(700, 1800);    // F2 zone -> spread vs round
-    const hi = band(1800, 5000);    // sibilants -> tongue tip / spread
+    const hi = band(1800, 5000);    // sibilants -> lip spread
     const tot = lo + mid + hi + 1e-6;
     const lvl = clamp01((rms - 0.006) * 11);
     V.env = envelope(V.env, lvl, dt, 22, 7);
     V.open = envelope(V.open, V.env * clamp01(lo / tot * 1.9), dt, 18, 6);
     V.round = envelope(V.round, V.env * clamp01(mid / tot * 2.1) * (1 - clamp01(hi / tot * 2.4)), dt, 13, 6);
     V.wide = envelope(V.wide, V.env * clamp01(hi / tot * 3.2), dt, 20, 7);
-    V.tip = envelope(V.tip, V.env * clamp01(hi / tot * 2.2), dt, 20, 6);
     V.active = V.env > 0.02;
     return V;
   }
@@ -1416,7 +1411,6 @@ details[open]>summary::before{content:"▾"}
       j: V.open * 0.62 * a,
       pk: V.round * 0.7 * a,
       sL: 0.08 + V.wide * 0.5 * a, sR: 0.08 + V.wide * 0.5 * a,
-      st: V.tip * 0.75 * a,
       bu: V.env * 0.08, ck: V.env * 0.3
     };
   }
@@ -1496,7 +1490,9 @@ details[open]>summary::before{content:"▾"}
 (function (root) {
   'use strict';
   const FM = root.FM, E = root.FMEngine;
-  const { clamp, clamp01, lerp, envelope, polyOK, bounds, m3, v3, matFromQuat } = FM;
+  const { clamp, clamp01, envelope, polyOK, bounds, v3, matFromQuat } = FM;
+  const EAR_SWING_GAIN = 0.5;
+  const EAR_TRI_WEIGHT = 0.12;
 
   function makeCanvas(w, h) {
     const c = root.document.createElement('canvas');
@@ -1547,11 +1543,11 @@ details[open]>summary::before{content:"▾"}
       W: 0, H: 0, ready: false,
       S2: null, DST: null, BASE: null, depth: null, normals: null, normalsFace: null,
       earW: null, earOff: null,
-      passes: null, proj: null, arches: null,
+      passes: null, proj: null, proj0: null, arches: null,
       cache: { enamel: enamelTexture(), noise: noiseTexture(96), iris: [null, null], sclera: ['235,230,225', '235,230,225'], plate: null, lum: 0.7, warm: 0.5 },
       hair: { x: 0, y: 0, vx: 0, vy: 0 },
       lidSkin: [null, null], jaw: 0, openEnv: 0,
-      frames: 0, stats: { tris: 0, culled: 0, earBand: 0, earFaded: 0 }, lastDebug: null
+      frames: 0, stats: { tris: 0, culled: 0, earBand: 0, earFaded: 0, earDetailSkipped: 0 }, lastDebug: null
     };
   }
 
@@ -1698,11 +1694,11 @@ details[open]>summary::before{content:"▾"}
         dkey: new Float32Array(list.length / 3),
         tmp: new Int32Array(list.length / 3),
         mergeFallbacks: 0, initialized: false,
-        pad: o.pad, cull: o.cull, mirror: o.mirror !== false
+        pad: o.pad, cull: o.cull, mirror: o.mirror !== false, detail: !!o.detail
       };
     };
     S.triA = mkPass(spec.mesh.base, S.normals, { pad: 0.9, cull: -0.02, mirror: true });
-    S.triB = mkPass(spec.mesh.face, S.normalsFace, { pad: 0.95, cull: -0.05, mirror: true });
+    S.triB = mkPass(spec.mesh.face, S.normalsFace, { pad: 0.95, cull: -0.05, mirror: true, detail: true });
     S.mid = spec.head.mid.slice();
     S.axis = E.tmjAxis(spec.head);
     S.arches = buildArches();
@@ -1762,6 +1758,7 @@ details[open]>summary::before{content:"▾"}
        difference between the rotated and the unrotated projection   */
     const proj0 = projWith([1, 0, 0, 0, 1, 0, 0, 0, 1]);
     S.proj = proj;
+    S.proj0 = proj0;
     const body = st.bodyAt || null;
     for (let i = 0; i < n; i++) {
       S.earOff[i * 2] = 0; S.earOff[i * 2 + 1] = 0;
@@ -1779,31 +1776,28 @@ details[open]>summary::before{content:"▾"}
                         : proj([S.BASE[i * 3], S.BASE[i * 3 + 1], S.BASE[i * 3 + 2]]);
       let dx = (p1[0] - p0[0]) * w, dy = (p1[1] - p0[1]) * w;
       /* ---- ear swing -------------------------------------------------
-         The shell warp above is expression-only (p1 and p0 share the
-         pose), which is fine for the face interior but leaves the
-         ears glued to the frontal silhouette through a turn: the far
-         ear never tucks behind the jaw and the near ear never
-         foreshortens.  Ear-band vertices therefore also take a
-         fraction of their *true* rotational displacement (rotated
-         projection minus identity projection of the canonical point).
-         The band weight fades to zero on the cheek, so the ear stays
-         anchored there while its outer edge swings; far and near
-         asymmetry (and pitch/roll coupling) fall out of the rotation
-         itself.  The gain is kept below 1 so the displacement
-         gradient across the cheek falloff can never fold a triangle,
-         and the term is identically zero at rest pose -> the frontal
-         photo is untouched and a held pose stays still.            */
+         Keep the frontal photo fixed, but give ear-band pixels a smooth
+         partial head turn so the near ear foreshortens and the far ear
+         tucks away. Use the same fractional rotation for the depth key as
+         for the screen displacement; mixing partial x/y with full-turn z
+         makes the painter sort put ears over the cheek on a turn.       */
       const ew = S.earW[i];
+      let depth1 = p1[2];
       if (ew > 0.003) {
         const bp = isFace ? [head.P[i][0], head.P[i][1], head.P[i][2] * (1 + zc)]
                           : [S.BASE[i * 3], S.BASE[i * 3 + 1], S.BASE[i * 3 + 2]];
         const pr = proj(bp), pi = proj0(bp);
-        const g = ew * w * 0.5;
+        const earTurn = clamp01(ew * EAR_SWING_GAIN);
+        const g = earTurn * w;
         const ex = (pr[0] - pi[0]) * g, ey = (pr[1] - pi[1]) * g;
         if (isFinite(ex) && isFinite(ey)) {
           dx += ex; dy += ey;
           S.earOff[i * 2] = ex; S.earOff[i * 2 + 1] = ey;
         }
+        /* Preserve expression depth while applying only the ear's partial
+           rotational depth. This keeps depth sorting coherent with its
+           visible 2D displacement at every yaw, pitch, and roll. */
+        depth1 = pi[2] + (pr[2] - pi[2]) * earTurn + (p1[2] - pr[2]);
       }
       if (mesh.kind[i] === 1 && hg > 0) {
         const info = mesh.ringOf[i];
@@ -1813,7 +1807,7 @@ details[open]>summary::before{content:"▾"}
       }
       S.DST[i * 2] = sx + dx;
       S.DST[i * 2 + 1] = sy + dy;
-      S.depth[i] = p1[2] * w + S.BASE[i * 3 + 2] * (1 - w) * 0.4;
+      S.depth[i] = depth1 * w + S.BASE[i * 3 + 2] * (1 - w) * 0.4;
     }
     if (st.limits !== false) {
       limits(head, C, (out) => {
@@ -1907,9 +1901,10 @@ details[open]>summary::before{content:"▾"}
       }
     }
     const R = matFromQuat(st.q);
+    const turnBlend = clamp01(Math.hypot(st.q[0], st.q[1], st.q[2]) / 0.12);
     const midX = S.mid[0];
     const pad = pass.pad * (o.padScale || 1);
-    let drawn = 0, culled = 0, earBand = 0, earFaded = 0;
+    let drawn = 0, culled = 0, earBand = 0, earFaded = 0, earDetailSkipped = 0;
     for (let t = 0; t < m; t++) {
       const tri = order[t] * 3;
       const a = list[tri], b = list[tri + 1], c = list[tri + 2];
@@ -1923,7 +1918,12 @@ details[open]>summary::before{content:"▾"}
          ear turns away, fade into the (unmirrored) edge-extended
          plate while the ear swing tucks them behind the jaw.       */
       const earF = pass.earF ? pass.earF[order[t]] : 0;
-      const isEar = earF > 0.30;
+      const isEar = earF > EAR_TRI_WEIGHT;
+      /* The dense face-detail pass is painted after the whole shell. Letting
+         its ear triangles through would draw them over nearer hair/cheek
+         triangles regardless of shell depth. The base pass owns this band:
+         it sorts ear, face, and hair together and still provides the texture. */
+      if (pass.detail && isEar) { earDetailSkipped++; continue; }
       const ax = DST[a * 2], ay = DST[a * 2 + 1];
       const bx = DST[b * 2], by = DST[b * 2 + 1];
       const cx = DST[c * 2], cy = DST[c * 2 + 1];
@@ -1974,13 +1974,12 @@ details[open]>summary::before{content:"▾"}
         if (isEar && S.cache.plate) {
           /* far ear melts into the edge-extended plate as its normal
              turns away — a continuous fade in nz, no binary switch.
-             A folded ear triangle (destination winding flipped vs the
-             source, which the swing gradient is tuned to avoid but a
-             skinny tessellation triangle can still do at the yaw cap)
-             is covered outright: flipped pinna texture is the one
-             thing this band must never show.                        */
+             source. A skinny tessellation triangle can still fold at a
+             hard turn, so ramp the plate replacement with turn strength:
+             this hides flipped pinna texture without fading fringe
+             triangles in the untouched frontal pose.                 */
           const folded = (det < 0) !== (area < 0);
-          const fade = folded ? 1 : clamp01((-nz - 0.04) / 0.28) * clamp01(earF * 1.7);
+          const fade = folded ? turnBlend : clamp01((-nz - 0.04) / 0.28) * clamp01(earF * 1.7);
           if (fade > 0.01) {
             ctx.globalAlpha = fade;
             try { ctx.drawImage(S.cache.plate, x0, y0, sw, sh, x0, y0, sw, sh); } catch (e) {}
@@ -1996,6 +1995,7 @@ details[open]>summary::before{content:"▾"}
     S.stats.tris += drawn; S.stats.culled = (S.stats.culled || 0) + culled;
     S.stats.earBand = (S.stats.earBand || 0) + earBand;
     S.stats.earFaded = (S.stats.earFaded || 0) + earFaded;
+    S.stats.earDetailSkipped = (S.stats.earDetailSkipped || 0) + earDetailSkipped;
     return drawn;
   }
 
@@ -2203,7 +2203,7 @@ details[open]>summary::before{content:"▾"}
     fr.org[2] + fr.ax[2] * u + fr.ay[2] * v + fr.az[2] * w
   ];
   /* Draw one rigid dental arch and return visibility diagnostics. The
-     upper arch is painted after the tongue to restore front-to-back order. */
+     upper arch completes the front-to-back dental order. */
   function drawArch(S, ctx, proj3, fr, which, openAmt, cfg) {
     /* cfg = { vis, bright, warmth } straight from the sliders */
     const { TW, TH, DEPTH } = S.arches;
@@ -2325,83 +2325,6 @@ details[open]>summary::before{content:"▾"}
     return true;
   }
 
-  function drawTongue(S, ctx, fr, proj3, D, st, h) {
-    const tg = clamp01(st.tongue);
-    if (tg < 0.02) return false;
-    const In = E.LIPS_I.map(i => D[i]);
-    if (!polyOK(In, 2.5)) return false;
-    const mw = fr.mw, gap = Math.max(0, st.gap || 0);
-    const len = mw * (0.20 + 0.62 * tg) + gap * 0.30;
-    const half = mw * (0.13 + 0.09 * tg);
-    const sec = [];
-    const S5 = 5;
-    for (let s = 0; s <= S5; s++) {
-      const t = s / S5;
-      const w = half * (0.5 + 0.6 * Math.sin(Math.PI * Math.min(1, 0.18 + t * 0.82)));
-      const v = fr.loY + gap * 0.06 + t * (gap * 0.26 + mw * 0.06) * (0.6 + 0.4 * tg);
-      const z = -mw * 0.10 + t * len;
-      sec.push({ l: proj3(mfp(fr, -w, v, z)), r: proj3(mfp(fr, w, v, z)), m: proj3(mfp(fr, 0, v, z)), t, w });
-    }
-    if (!sec.every(s => isFinite(s.l[0]) && isFinite(s.r[0]) && isFinite(s.m[0]))) return false;
-    const bb = bounds(sec.flatMap(s => [s.l, s.r]));
-    if (!(bb.w > 1 && bb.h > 1)) return false;
-    ctx.save();
-    ctx.beginPath();
-    In.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
-    ctx.closePath();
-    ctx.clip();
-    const path = () => {
-      ctx.beginPath();
-      ctx.moveTo(sec[0].l[0], sec[0].l[1]);
-      for (let i = 1; i < sec.length; i++) ctx.lineTo(sec[i].l[0], sec[i].l[1]);
-      for (let i = sec.length - 1; i >= 0; i--) ctx.lineTo(sec[i].r[0], sec[i].r[1]);
-      ctx.closePath();
-    };
-    const g = ctx.createLinearGradient(sec[0].m[0], sec[0].m[1], sec[sec.length - 1].m[0], sec[sec.length - 1].m[1]);
-    g.addColorStop(0, 'rgba(140,54,68,1)');
-    g.addColorStop(.5, 'rgba(200,100,112,1)');
-    g.addColorStop(1, 'rgba(222,132,140,1)');
-    ctx.globalAlpha = clamp01(0.4 + 0.6 * h);
-    path();
-    ctx.fillStyle = g;
-    ctx.fill();
-    ctx.save();
-    path(); ctx.clip();
-    let s2 = 12345;
-    const rnd = () => (s2 = (s2 * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
-    const first = sec[0].m, last = sec[sec.length - 1].m;
-    for (let i = 0; i < 80; i++) {
-      const t = rnd(), u = rnd();
-      const x = lerp(first[0], last[0], t) + (u - .5) * half * 1.7;
-      const y = lerp(first[1], last[1], t);
-      ctx.beginPath();
-      ctx.arc(x, y, i % 3 ? 0.9 : 1.4, 0, 7);
-      ctx.fillStyle = 'rgba(255,206,212,.15)';
-      ctx.fill();
-    }
-    ctx.strokeStyle = 'rgba(120,26,42,.42)';
-    ctx.lineWidth = Math.max(1.2, half * 0.16);
-    ctx.beginPath();
-    ctx.moveTo(first[0], first[1]);
-    for (let i = 1; i < sec.length; i++) ctx.lineTo(sec[i].m[0], sec[i].m[1]);
-    ctx.stroke();
-    const tip = sec[sec.length - 1].m;
-    const sg = ctx.createRadialGradient(tip[0], tip[1], 1, tip[0], tip[1], Math.max(3, half * 1.5));
-    sg.addColorStop(0, 'rgba(255,222,226,.32)');
-    sg.addColorStop(1, 'rgba(255,222,226,0)');
-    ctx.fillStyle = sg;
-    ctx.fillRect(bb.x0 - 4, bb.y0 - 4, bb.w + 8, bb.h + 8);
-    const sh = ctx.createLinearGradient(0, bb.y0, 0, bb.y0 + bb.h * 0.5);
-    sh.addColorStop(0, 'rgba(58,12,20,.5)');
-    sh.addColorStop(1, 'rgba(58,12,20,0)');
-    ctx.fillStyle = sh;
-    ctx.fillRect(bb.x0 - 4, bb.y0 - 4, bb.w + 8, bb.h * 0.55);
-    ctx.restore();
-    ctx.globalAlpha = 1;
-    ctx.restore();
-    return true;
-  }
-
   function drawShading(S, ctx, D, st) {
     const yaw = E.eulerYaw(st.q);
     const amt = clamp01(Math.abs(yaw) * 0.9 * (st.shade || 0));
@@ -2433,7 +2356,7 @@ details[open]>summary::before{content:"▾"}
     const C = deform(S, st);
     const D = new Array(478);
     for (let i = 0; i < 478; i++) D[i] = { x: S.DST[i * 2], y: S.DST[i * 2 + 1], z: S.depth[i] };
-    S.stats.tris = 0; S.stats.culled = 0; S.stats.earBand = 0; S.stats.earFaded = 0;
+    S.stats.tris = 0; S.stats.culled = 0; S.stats.earBand = 0; S.stats.earFaded = 0; S.stats.earDetailSkipped = 0;
     /* ---- compose the shell on the layer, then blit once ------------ */
     lc.setTransform(1, 0, 0, 1, 0, 0);
     lc.clearRect(0, 0, S.W, S.H);
@@ -2444,7 +2367,7 @@ details[open]>summary::before{content:"▾"}
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, S.W, S.H);
     let mw = 0, gap = 0, h = S.openEnv;
-    const oral = { cavity: false, lowerTeeth: 0, lowerAlpha: 0, tongue: false, upperTeeth: 0, upperAlpha: 0, lips: false };
+    const oral = { cavity: false, lowerTeeth: 0, lowerAlpha: 0, upperTeeth: 0, upperAlpha: 0, lips: false };
     if (st.origOnly) {
       ctx.drawImage(S.src, 0, 0);
     } else {
@@ -2462,7 +2385,6 @@ details[open]>summary::before{content:"▾"}
       const openAmt = clamp01(h * 1.1);
       const lower = drawArch(S, ctx, proj3, fr, 'lo', openAmt, st);
       oral.lowerTeeth = lower.drawnTeeth; oral.lowerAlpha = lower.alphaSum;
-      oral.tongue = drawTongue(S, ctx, fr, proj3, D, { tongue: st.tongue, gap: gap + mw * 0.035 }, h) === true;
       const upper = drawArch(S, ctx, proj3, fr, 'up', openAmt, st);
       oral.upperTeeth = upper.drawnTeeth; oral.upperAlpha = upper.alphaSum;
       oral.lips = drawLips(S, ctx, D, mw, gap) === true;
@@ -2509,7 +2431,8 @@ details[open]>summary::before{content:"▾"}
       ctx.restore();
     }
     const dbg = { tris: S.stats.tris, culled: S.stats.culled,
-                  ear: { band: S.stats.earBand || 0, faded: S.stats.earFaded || 0 },
+                  ear: { band: S.stats.earBand || 0, faded: S.stats.earFaded || 0,
+                         detailSkipped: S.stats.earDetailSkipped || 0 },
                   mouth: { mw, gap, h, ...oral }, jaw: S.jaw };
     S.lastDebug = dbg;
     return dbg;
@@ -2576,14 +2499,14 @@ details[open]>summary::before{content:"▾"}
     actions: E.zeroActions(), live: E.zeroActions(), target: E.zeroActions(),
     sculpt: new Float32Array(478 * 2), bag: [], drag: -1, hover: -1, dragOff: { x: 0, y: 0 }, sculptMode: 'drag',
     gaze: [[0, 0], [0, 0]], gazeS: [[0, 0], [0, 0]], gazeNeutral: [[0, 0], [0, 0]], sacT: 0, sacV: [0, 0],
-    lidRaw: [0, 0], lid: [0, 0], lidN: [null, null], kissRaw: 0, kiss: 0, tongueRaw: 0, tongue: 0,
-    liveKiss: 0, liveTongue: 0, liveSmile: 0, liveFrown: 0, liveSquint: 0,
+    lidRaw: [0, 0], lid: [0, 0], lidN: [null, null], kissRaw: 0, kiss: 0,
+    liveKiss: 0, liveSmile: 0, liveFrown: 0, liveSquint: 0,
     exprBuf: new Float32Array(478 * 3), resBuf: new Float32Array(478 * 3), tgtBuf: new Float32Array(478 * 3),
     outBuf: new Float32Array(478 * 3),
     perf: { last: 0, dt: 1 / 60, fps: 0, n: 0, t0: 0, hud: 0, t: 0 },
     pose: { cur: null, neu: null, JI: null, tick: 0 },
     pointList: null, partIdx: null, p2: null,
-    lastFaceAt: -1e9, err: null, status: '', statusBase: '', rec: null, recStream: null, chunks: [], keyT: false,
+    lastFaceAt: -1e9, err: null, status: '', statusBase: '', rec: null, recStream: null, chunks: [],
     photoName: 'photo', idle: { next: 0, at: 0 }, crash: null
   };
 
@@ -2875,9 +2798,8 @@ details[open]>summary::before{content:"▾"}
       L.ur = clamp01((bv('mouthUpperUpLeft') + bv('mouthUpperUpRight')) / 2);
       L.ck = clamp01(((bv('cheekPuff') + bv('cheekSquintLeft') + bv('cheekSquintRight')) / 3) * 1.2);
       A.liveKiss = clamp01(Math.max(nz(bv('mouthPucker')), nz(bv('mouthFunnel')) * 0.7) * 1.5 - 0.08);
-      A.liveTongue = clamp01((nz(bv('tongueOut')) * num('tsens', 1.4) - 0.05) / 0.5);
     } else {
-      A.liveKiss = A.liveTongue = 0;
+      A.liveKiss = 0;
     }
   }
 
@@ -2924,7 +2846,6 @@ details[open]>summary::before{content:"▾"}
       A.actions[k] = slew(nz(A.actions[k]), v, dt, 2.2, 1.9);
     }
     A.kiss = envelope(A.kiss, clamp01(nz(A.liveKiss) * (live ? 1 : 0)), dt, 14, 10);
-    A.tongue = envelope(A.tongue, clamp01(Math.max((live ? nz(A.liveTongue) : 0), nz(A.actions.tg), (chk('forceTongue') || A.keyT) ? 1 : 0)), dt, 16, 9);
     /* gaze: tracked iris offset, or idle saccades when nothing drives it */
     if (live) syncP2();
     const gg = num('gg', 1.9);
@@ -2962,7 +2883,7 @@ details[open]>summary::before{content:"▾"}
   /* ------------------------------------------------------ expression mix */
   function composeDelta(dt) {
     const strength = num('exs', 0.8);
-    const acts = { ...A.actions, pk: Math.max(nz(A.actions.pk), nz(A.kiss)), tg: Math.max(nz(A.actions.tg), nz(A.tongue)) };
+    const acts = { ...A.actions, pk: Math.max(nz(A.actions.pk), nz(A.kiss)) };
     const d1 = E.expressionDelta(A.head, acts, A.exprBuf);
     for (let i = 0; i < 478 * 3; i++) A.tgtBuf[i] = d1[i] * strength;
     const useRes = A.tracker && A.tracker.neutral && (A.preset === 'live' ? true : chk('pmix'));
@@ -3023,7 +2944,7 @@ details[open]>summary::before{content:"▾"}
         jawOpen: clamp01(nz(A.actions.j) * 1.4),
         jawMeshGain: 1,
         limits: chk('lim'), shade: num('fs', 0.35), hairGain: num('hs', 0.6),
-        gaze: A.gaze, gazeGain: num('gg', 1.9), lid: A.lid, tongue: A.tongue,
+        gaze: A.gaze, gazeGain: num('gg', 1.9), lid: A.lid,
         vis: num('tv', 0.4), bright: num('tb', 1.15), warmth: num('tw', 0),
         showPoints: chk('showPts'), showMesh: chk('showMesh'), origOnly: chk('showOrig'),
         points: A.pointList, dragIndex: A.drag >= 0 ? A.drag : -1, hoverIndex: A.hover >= 0 ? A.hover : -1,
@@ -3301,12 +3222,8 @@ details[open]>summary::before{content:"▾"}
       });
     }
     root.addEventListener('keydown', e => {
-      if (!e.target || !/INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) {
-        if (e.key === 't' || e.key === 'T') A.keyT = true;
-      }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); undo(); }
     });
-    root.addEventListener('keyup', e => { if (e.key === 't' || e.key === 'T') A.keyT = false; });
     root.addEventListener('resize', resizeStage);
   }
 

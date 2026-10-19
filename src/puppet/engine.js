@@ -25,7 +25,7 @@
   if (!FM) throw new Error('FaceMirror engine: src/math.js must load first');
   const { clamp, clamp01, lerp, smoothstep, softLimit, slew, envelope, oneEuro, oneEuroRun, oneEuroReset,
           kabsch, v3, m3, quatFromMat, matFromQuat, quatFromYPR, eulerFromQuat, quatSlerp, quatAngle,
-          quatSlew, quatFollow, quatNorm, ratioTracker, ratioTrack, splineClosed, polyArea, bounds } = FM;
+          quatSlew, quatFollow, quatNorm, ratioTracker, ratioTrack } = FM;
 
   /* ===================================================================
      1. Landmark tables (MediaPipe Face Mesh, 478 points)
@@ -42,7 +42,7 @@
   const LIPS_I = [78, 82, 13, 312, 308, 317, 14, 87];
   const NOSE = [168, 6, 197, 195, 5, 4, 1, 19, 94, 2, 98, 327, 129, 358, 219, 439, 218, 438, 115, 344,
     49, 279, 48, 278, 64, 294, 102, 331, 128, 357, 114, 343, 217, 437];
-  /* upper / lower inner lip run (used to hang teeth and the tongue) */
+  /* upper / lower inner lip runs used by the dental arch and mouth limits */
   const UP_LIP = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308];
   const LO_LIP = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308];
   const LIDS = { L: { up: [159, 158, 160, 161, 157], lo: [145, 153, 144, 154, 163], ic: 133, oc: 33 },
@@ -332,7 +332,7 @@
      the head turns instead of smearing across the screen.
      =================================================================== */
   const ACTIONS = ['sL', 'sR', 'j', 'bu', 'buR', 'bi', 'bd', 'eo', 'sq', 'dr', 'pk', 'fr', 'nz', 'ur',
-                   'st', 'bL', 'bR', 'tg', 'gx', 'gy', 'ck', 'wv'];
+                   'bL', 'bR', 'gx', 'gy', 'ck', 'wv'];
   const zeroActions = () => { const o = {}; for (const k of ACTIONS) o[k] = 0; return o; };
   const PRESETS = {
     'Neutral': {},
@@ -343,13 +343,12 @@
     'Sad': { fr: 0.72, bi: 0.9, dr: 0.3, j: 0.04, gy: 0.8 },
     'Angry': { bd: 0.9, fr: 0.5, sq: 0.3, nz: 0.35, ur: 0.15 },
     'Surprised': { bu: 0.9, eo: 0.85, j: 0.5 },
-    'Fear': { bu: 0.55, bi: 0.7, eo: 0.75, j: 0.28, st: 0.7 },
+    'Fear': { bu: 0.55, bi: 0.7, eo: 0.75, j: 0.28 },
     'Disgust': { nz: 0.9, ur: 0.7, bd: 0.35, fr: 0.35, sq: 0.25 },
     'Skeptical': { buR: 0.8, bd: 0.25, sR: 0.28, dr: 0.15 },
     'Sleepy': { dr: 0.68, j: 0.1 },
     'Wink': { bL: 1, sL: 0.45, sR: 0.45, sq: 0.1 },
     'Kiss': { pk: 1, bu: 0.1 },
-    'Tongue out': { tg: 1, j: 0.3 },
     'Look left': { gx: -1 }, 'Look right': { gx: 1 }, 'Look up': { gy: -1 }, 'Look down': { gy: 1 },
     'Talking': null
   };
@@ -359,14 +358,13 @@
     const e = clamp01(Math.sin(t * 0.72) * 3 + 1.15);
     const g = t * 4.3, k = Math.floor(g), f = g - k;
     const o = Math.pow(Math.sin(Math.PI * f), 0.7) * e;
-    const h = s(k, 0), h2 = s(k, 3.1);
+    const h = s(k, 0);
     const round = h > 0.68;
     return {
       j: o * (0.10 + 0.42 * h),                       // jaw open, vowel height
       pk: round ? o * 0.85 : o * 0.12,                // rounded vowels
-      st: h2 < 0.26 ? o * 0.6 : 0,                    // tongue tip for dentals
       sL: 0.10 + 0.12 * h, sR: 0.10 + 0.12 * h,       // mouth corners spread
-      bu: e * 0.10 * h2, ck: 0.2
+      bu: e * 0.10 * s(k, 3.1), ck: 0.2
     };
   }
   /* Build the per-landmark 3D expression delta (canonical px units). */
@@ -392,7 +390,7 @@
         const up = 1 - lift;
         const smileAmt = sm * mouthMask;
         dy += (-smileAmt * fh * 0.20 * au * au * up - A.fr * fh * 0.16 * au * au * up);
-        dx += u * (smileAmt * 0.09 + A.st * 0.14) * fw * au * mouthMask;
+        dx += u * smileAmt * 0.09 * fw * au * mouthMask;
         dy += A.ur * fh * 0.10 * up * (1 - au * 0.5);
         dz += (A.eo * 0.35 + A.pk * 0.55) * fw * 0.06 * mouthMask;
         /* pucker: lips gather toward the mouth axis and curl outward */
@@ -432,7 +430,7 @@
     }
     return d;
   }
-  /* mouth-shape readout from the current photo mesh (drives teeth/tongue) */
+  /* mouth-shape readout from the current photo mesh (drives the teeth) */
   function mouthState(head, D, idx) {
     const g = (a, b) => Math.hypot(D[a].x - D[b].x, D[a].y - D[b].y);
     const mw = g(61, 291) || head.fw * 0.4;
@@ -477,8 +475,8 @@
 
   /* ===================================================================
      6. Rigid mandible (TMJ hinge) + linear blend skinning
-     The jaw, lower teeth, tongue and chin share one bone, so an open
-     mouth never looks like a vertical smear.
+     The jaw, lower teeth and chin share one bone, so an open mouth never
+     looks like a vertical smear.
      =================================================================== */
   function tmjAxis(head) {
     /* hinge roughly 6% of face width above the mouth, passing through the
@@ -652,12 +650,12 @@
   /* ===================================================================
      8. Viseme / audio driver  (mic amplitude + spectral shape)
      A miniature of the audio->viseme front ends (SadTalker/Wav2Lip use a
-     learned encoder): we band-limit the spectrum into four viseme
-     classes and drive jaw, pucker, spread and tongue with envelopes.
+     learned encoder): we band-limit the spectrum into viseme classes and
+     drive jaw, pucker and spread with envelopes.
      =================================================================== */
   function createViseme() {
     return {
-      env: 0, open: 0, round: 0, wide: 0, tip: 0, tone: 0,
+      env: 0, open: 0, round: 0, wide: 0, tone: 0,
       bands: [0, 0, 0, 0], t: 0, active: false
     };
   }
@@ -672,14 +670,13 @@
     };
     const lo = band(120, 700);      // F1 zone -> jaw / open vowels
     const mid = band(700, 1800);    // F2 zone -> spread vs round
-    const hi = band(1800, 5000);    // sibilants -> tongue tip / spread
+    const hi = band(1800, 5000);    // sibilants -> lip spread
     const tot = lo + mid + hi + 1e-6;
     const lvl = clamp01((rms - 0.006) * 11);
     V.env = envelope(V.env, lvl, dt, 22, 7);
     V.open = envelope(V.open, V.env * clamp01(lo / tot * 1.9), dt, 18, 6);
     V.round = envelope(V.round, V.env * clamp01(mid / tot * 2.1) * (1 - clamp01(hi / tot * 2.4)), dt, 13, 6);
     V.wide = envelope(V.wide, V.env * clamp01(hi / tot * 3.2), dt, 20, 7);
-    V.tip = envelope(V.tip, V.env * clamp01(hi / tot * 2.2), dt, 20, 6);
     V.active = V.env > 0.02;
     return V;
   }
@@ -690,7 +687,6 @@
       j: V.open * 0.62 * a,
       pk: V.round * 0.7 * a,
       sL: 0.08 + V.wide * 0.5 * a, sR: 0.08 + V.wide * 0.5 * a,
-      st: V.tip * 0.75 * a,
       bu: V.env * 0.08, ck: V.env * 0.3
     };
   }

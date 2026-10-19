@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Trill Face Puppet · 3D head turn, rigid teeth, audio visemes</title>
-<meta name="description" content="Drive a still photograph from a webcam face mesh: perspective head rotation, mirrored-source far-side approximation, painter-sorted shell warping, procedural dental arches and tongue, audio visemes, PNG capture and WebM recording." />
+<meta name="description" content="Drive a still photograph from a webcam face mesh: perspective head rotation, mirrored-source far-side approximation, painter-sorted shell warping, procedural dental arches, audio visemes, PNG capture and WebM recording." />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🎭</text></svg>" />
 <style>
 :root{--bg:#0d0f14;--card:#161a22;--card2:#1b202a;--fg:#e8eaf0;--mut:#8b93a7;--acc:#5eead4;--acc2:#f472b6;--line:#272c38}
@@ -52,13 +52,13 @@ details[open]>summary::before{content:"▾"}
 </style>
 </head>
 <body>
-<a class="backlink" href="index.html#back" id="contLink">◀ Back to FaceMirror · Continue ▶</a>
+<a class="backlink" href="studio.html" id="contLink">◀ Open FaceMirror-3D Studio</a>
 <h1>Trill <em>Face Puppet</em></h1>
 <p class="sub">
   A still photo becomes a 2.5D facial shell: 478 landmarks lifted into canonical head space, three hair rings and a pinned
   frame around them. Your webcam face mesh drives it with a weighted Kabsch fit — pose is separated from expression so a
   smile stays on the face while the head turns. The unseen far side is approximated from mirrored photo patches rather
-  than generated; the oral cavity uses a rigid jaw, procedural dental arches and a textured tongue. Drag a dot to sculpt,
+  than generated; the oral cavity uses a rigid jaw and procedural dental arches. Drag a dot to sculpt,
   or select Smile, Frown or Mouth O and click the face.
 </p>
 
@@ -112,7 +112,6 @@ details[open]>summary::before{content:"▾"}
     <label class="rng">Smoothing (more = calmer) <output></output><input id="sm" type="range" min="0" max="1" step="0.05" value="0.72"></label>
     <label class="rng">Blink sensitivity <output></output><input id="bl" type="range" min="0.5" max="1.5" step="0.05" value="1"></label>
     <label class="rng">Eye gaze gain <output></output><input id="gg" type="range" min="0.5" max="2.5" step="0.05" value="1.7"></label>
-    <label class="rng">Tongue sensitivity <output></output><input id="tsens" type="range" min="0.5" max="3" step="0.05" value="1.4"></label>
     <label class="rng">3D depth (head turn) <output></output><input id="dp" type="range" min="0.5" max="2" step="0.05" value="1.3"></label>
     <label class="rng">Focal length (perspective) <output></output><input id="focal" type="range" min="1.8" max="6" step="0.1" value="3.1"></label>
     <label class="rng">Head-turn shading <output></output><input id="fs" type="range" min="0" max="1" step="0.05" value="0.35"></label>
@@ -122,7 +121,6 @@ details[open]>summary::before{content:"▾"}
     <label class="rng">Drag area (neighbours follow) <output></output><input id="da" type="range" min="0" max="2" step="0.05" value="1"></label>
     <label class="rng">Max mouth opening <output></output><input id="mo" type="range" min="0.3" max="0.9" step="0.02" value="0.72"></label>
     <label class="chk"><input id="lim" type="checkbox" checked> Anatomical limits (lids / lips can't invert)</label>
-    <label class="chk"><input id="tf" type="checkbox"> Force tongue out (or hold T)</label>
   </div>
 </details>
 

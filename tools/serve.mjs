@@ -39,5 +39,5 @@ const server = createServer(async (req, res) => {
   }
 });
 server.listen(port, '0.0.0.0', () => {
-  console.log(`FaceMirror dev server on http://0.0.0.0:${port}/  (puppet.html, index.html)`);
+  console.log(`FaceMirror dev server on http://0.0.0.0:${port}/  (main: index.html; 3D studio: studio.html)`);
 });

@@ -52,14 +52,14 @@
     actions: E.zeroActions(), live: E.zeroActions(), target: E.zeroActions(),
     sculpt: new Float32Array(478 * 2), bag: [], drag: -1, hover: -1, dragOff: { x: 0, y: 0 }, sculptMode: 'drag',
     gaze: [[0, 0], [0, 0]], gazeS: [[0, 0], [0, 0]], gazeNeutral: [[0, 0], [0, 0]], sacT: 0, sacV: [0, 0],
-    lidRaw: [0, 0], lid: [0, 0], lidN: [null, null], kissRaw: 0, kiss: 0, tongueRaw: 0, tongue: 0,
-    liveKiss: 0, liveTongue: 0, liveSmile: 0, liveFrown: 0, liveSquint: 0,
+    lidRaw: [0, 0], lid: [0, 0], lidN: [null, null], kissRaw: 0, kiss: 0,
+    liveKiss: 0, liveSmile: 0, liveFrown: 0, liveSquint: 0,
     exprBuf: new Float32Array(478 * 3), resBuf: new Float32Array(478 * 3), tgtBuf: new Float32Array(478 * 3),
     outBuf: new Float32Array(478 * 3),
     perf: { last: 0, dt: 1 / 60, fps: 0, n: 0, t0: 0, hud: 0, t: 0 },
     pose: { cur: null, neu: null, JI: null, tick: 0 },
     pointList: null, partIdx: null, p2: null,
-    lastFaceAt: -1e9, err: null, status: '', statusBase: '', rec: null, recStream: null, chunks: [], keyT: false,
+    lastFaceAt: -1e9, err: null, status: '', statusBase: '', rec: null, recStream: null, chunks: [],
     photoName: 'photo', idle: { next: 0, at: 0 }, crash: null
   };
 
@@ -351,9 +351,8 @@
       L.ur = clamp01((bv('mouthUpperUpLeft') + bv('mouthUpperUpRight')) / 2);
       L.ck = clamp01(((bv('cheekPuff') + bv('cheekSquintLeft') + bv('cheekSquintRight')) / 3) * 1.2);
       A.liveKiss = clamp01(Math.max(nz(bv('mouthPucker')), nz(bv('mouthFunnel')) * 0.7) * 1.5 - 0.08);
-      A.liveTongue = clamp01((nz(bv('tongueOut')) * num('tsens', 1.4) - 0.05) / 0.5);
     } else {
-      A.liveKiss = A.liveTongue = 0;
+      A.liveKiss = 0;
     }
   }
 
@@ -400,7 +399,6 @@
       A.actions[k] = slew(nz(A.actions[k]), v, dt, 2.2, 1.9);
     }
     A.kiss = envelope(A.kiss, clamp01(nz(A.liveKiss) * (live ? 1 : 0)), dt, 14, 10);
-    A.tongue = envelope(A.tongue, clamp01(Math.max((live ? nz(A.liveTongue) : 0), nz(A.actions.tg), (chk('forceTongue') || A.keyT) ? 1 : 0)), dt, 16, 9);
     /* gaze: tracked iris offset, or idle saccades when nothing drives it */
     if (live) syncP2();
     const gg = num('gg', 1.9);
@@ -438,7 +436,7 @@
   /* ------------------------------------------------------ expression mix */
   function composeDelta(dt) {
     const strength = num('exs', 0.8);
-    const acts = { ...A.actions, pk: Math.max(nz(A.actions.pk), nz(A.kiss)), tg: Math.max(nz(A.actions.tg), nz(A.tongue)) };
+    const acts = { ...A.actions, pk: Math.max(nz(A.actions.pk), nz(A.kiss)) };
     const d1 = E.expressionDelta(A.head, acts, A.exprBuf);
     for (let i = 0; i < 478 * 3; i++) A.tgtBuf[i] = d1[i] * strength;
     const useRes = A.tracker && A.tracker.neutral && (A.preset === 'live' ? true : chk('pmix'));
@@ -499,7 +497,7 @@
         jawOpen: clamp01(nz(A.actions.j) * 1.4),
         jawMeshGain: 1,
         limits: chk('lim'), shade: num('fs', 0.35), hairGain: num('hs', 0.6),
-        gaze: A.gaze, gazeGain: num('gg', 1.9), lid: A.lid, tongue: A.tongue,
+        gaze: A.gaze, gazeGain: num('gg', 1.9), lid: A.lid,
         vis: num('tv', 0.4), bright: num('tb', 1.15), warmth: num('tw', 0),
         showPoints: chk('showPts'), showMesh: chk('showMesh'), origOnly: chk('showOrig'),
         points: A.pointList, dragIndex: A.drag >= 0 ? A.drag : -1, hoverIndex: A.hover >= 0 ? A.hover : -1,
@@ -777,12 +775,8 @@
       });
     }
     root.addEventListener('keydown', e => {
-      if (!e.target || !/INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) {
-        if (e.key === 't' || e.key === 'T') A.keyT = true;
-      }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); undo(); }
     });
-    root.addEventListener('keyup', e => { if (e.key === 't' || e.key === 'T') A.keyT = false; });
     root.addEventListener('resize', resizeStage);
   }
 

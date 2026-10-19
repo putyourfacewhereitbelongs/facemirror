@@ -3,9 +3,10 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Realistic webcam-driven 3D face avatar + face editor, with the legacy 2.5D photo puppet kept at puppet.html.",
+  "description": "Webcam-driven 2.5D photo face puppet as the main app, with a separate 3D face studio.",
   "scripts": {
     "test": "npm run test:3d && npm run test:puppet",
+    "dev": "node tools/build.mjs && node tools/serve.mjs",
     "test:3d": "node --test src/tests/",
     "test:puppet": "node tools/build.mjs --check && node tools/verify.mjs && node tools/harness.mjs",
     "check": "for f in src/*.js src/puppet/*.js tools/*.mjs; do node --check \"$f\" || exit 1; done && node tools/build.mjs --check",
