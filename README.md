@@ -1,175 +1,136 @@
-# FaceMirror-3D
+# FaceMirror
 
-A realistic, webcam-driven 3D face avatar that mirrors your face — pose, mouth,
-eyes, blinks, emotions — and can also be sculpted by click-dragging its features
-and picking emotions. Built for a machine with **4 GB RAM and CPU-only graphics**:
-motion reads as *alive* (real blinks, saccades, skin, head inertia), and nothing
-ever depends on a download beyond the app's own pinned assets.
+FaceMirror's main page is the **2.5D photo puppet**: animate a still portrait
+with webcam-driven expressions and head turns, sculpt facial features, then
+save a PNG or record a WebM. The FaceMirror-3D experience is still included as
+a separate studio at [`studio.html`](studio.html).
 
-- **100% local.** Video frames never leave the page (see the badge, top-left).
-- **Zero install.** Static site, vanilla ES modules, no build step.
-- **Graceful everywhere.** No webcam → full manual mode. Missing `head.glb` →
-  procedural head + webcam "Mirror Skin". Slow machine → adaptive quality that
-  never drops the avatar below 24 fps.
+- **Your face stays local.** Webcam frames are processed in the browser and are
+  never uploaded. The puppet loads MediaPipe and its models from public CDNs.
+- **Static app.** No backend or build tool is needed to run the committed pages.
+- **Works without a webcam.** Choose a portrait and use the sculpting and
+  expression tools manually.
 
-## Run it
-
-```bash
-cd facemirror/
-python3 -m http.server 8010
-# or: npx serve
-```
-
-Open <http://localhost:8010> in Chrome or Edge. Press **Mirror (webcam) ⏻** and
-allow the camera. (Webcam needs http/localhost — not `file://`.)
-
-First load is fully self-contained: three.js, MediaPipe tasks-vision wasm, and
-the 3.7 MB face-landmarker model are vendored under `vendor/` + `assets/`.
-After that it runs offline (settings live in `localStorage`).
-
-## Legacy 2.5D photo puppet
-
-The earlier still-photo puppet remains available at
-[`puppet.html`](puppet.html) alongside FaceMirror-3D. It uses the 478-point
-face mesh to warp a portrait through head pose and expressions, with sculpt
-tools, procedural teeth/tongue, PNG capture and WebM recording. During head
-turns its geometrically derived ear band is recessed behind the cheek plane,
-foreshortens instead of staying glued to the silhouette, and is never
-mirror-sampled; the far ear tucks behind the jaw and fades into an
-edge-extended plate.
+## Run the main app
 
 ```bash
-npm install
-npm run dev:puppet        # rebuild puppet.html and serve on 0.0.0.0:4173
+npm run dev
 ```
 
-Unlike FaceMirror-3D, the legacy page loads MediaPipe Tasks Vision and its
-models from their CDNs, and its Delaunay build/test tooling uses the
-`delaunator` package in `package.json`.
+This builds the puppet page from its source and serves the site on
+<http://localhost:4173>. Open it in Chrome or Edge, choose a portrait, then
+press **Start webcam** and allow camera access. Webcam access requires `http://`
+or `https://` (not `file://`).
+
+The main page is generated from [`src/puppet/puppet.src.html`](src/puppet/puppet.src.html)
+and the scripts in `src/puppet/`. The generated `index.html` is the default
+entry point; `puppet.html` remains as a direct-link alias. Rebuild after
+editing the puppet sources with:
+
+```bash
+npm run build:puppet
+```
+
+For a quick static serve without rebuilding, use `python3 -m http.server 8010`
+and open <http://localhost:8010>.
+
+## Main app: 2.5D photo puppet
+
+The 478-point face mesh warps a portrait through head pose and expressions,
+with sculpt tools, procedural teeth, PNG capture, and WebM recording.
+Head turns use a geometrically derived ear band recessed behind the cheek; the
+far ear tucks behind the jaw and fades into an edge-extended plate.
+
+The puppet page loads MediaPipe Tasks Vision and its face/pose models from
+CDNs. Tracking and rendering run in the browser; the Delaunay triangulation
+used by the build/test tooling uses the `delaunator` npm package.
+
+## FaceMirror-3D Studio
+
+Open [`studio.html`](studio.html) for the webcam-driven 3D face avatar and face
+editor. It tracks pose, mouth, eyes, blinks, and emotions, and supports manual
+sculpting, 52-channel controls, recordings, and GLB export. Its three.js,
+MediaPipe runtime, and face-landmarker model are vendored locally under
+`vendor/` and `assets/`.
+
+The 3D studio targets **4 GB RAM and CPU-only graphics**: it includes a
+procedural head fallback, webcam "Mirror Skin", manual mode when no webcam is
+available, and adaptive rendering quality.
 
 ## What's inside
 
 | Path | What |
 | --- | --- |
-| `index.html`, `styles.css` | UI shell: dark studio, one collapsible right panel, full-bleed canvas |
-| `src/main.js` | bootstrap, fixed 60 Hz solver loop, producer wiring |
+| `index.html` | Generated main 2.5D puppet page (default site entry point) |
+| `puppet.html` | Generated direct-link alias of the main puppet page |
+| `src/puppet/puppet.src.html`, `src/puppet/`, `src/math.js` | Puppet HTML source, engine, renderer, UI, and shared math core |
+| `tools/build.mjs` | Builds and verifies both generated puppet pages |
+| `studio.html`, `styles.css` | FaceMirror-3D Studio page and its UI styles |
+| `src/main.js` | 3D studio bootstrap, fixed 60 Hz solver loop, producer wiring |
 | `src/tracker.js` | `getUserMedia` + MediaPipe FaceLandmarker (`numFaces:1`, strictly-increasing timestamps) |
 | `src/calibrate.js` | 5-step wizard: 60-frame neutral, gesture ranges, wink L/R map, neutral depth |
-| `src/rig.js` | ONE source of truth: `weights = Float32Array(52)`, explicit producer merge + 🔒 pins |
-| `src/channels.js` | dead-channel revival from 478 landmarks in canonical (pose-removed) space |
-| `src/smoothing.js` | One-Euro + critically-damped springs, 60 Hz fixed substeps, hysteresis |
-| `src/eyes.js` | Poisson blink scheduler, saccades, microsaccades, Listing's law, VOR clamp-and-reset, stabilizeBlink |
-| `src/pose.js` | head quaternion from the transformation matrix, clamps, inertia, rubber-band drag |
-| `src/emotions.js` | 7 FACS preset vectors + cosine-similarity read-back ("Emotion read-back (local)") |
-| `src/drag.js` | click-drag editing via per-control morph Jacobian solve, undo stack |
-| `src/headAsset.js` | GLB loader (ARKit-52 name wiring) + procedural head + Mirror Skin |
-| `src/renderer.js` | three.js scene, studio lighting, cheap-SSS skin patch, tone mapping |
-| `src/recorder.js` | 52-ch 30 fps ring buffer, playback, `.json` / `.anim.glb` / head `.glb` export |
-| `src/perf.js` | adaptive quality governor + `Shift+D` HUD |
-| `src/ui.js` | chips, 52 sliders with 🔒 + gain drags, wizard, PiP preview |
-| `vendor/`, `assets/` | pinned three.js 0.186.1, tasks-vision 1.1.0 + wasm, face_landmarker.task |
-| `puppet.html`, `src/puppet/`, `src/math.js` | legacy 2.5D still-photo puppet and its inlined distributable page |
-| `tools/` | legacy puppet build, verification, mock-DOM harness and dev server |
+| `src/rig.js` | One source of truth: `weights = Float32Array(52)`, producer merge + 🔒 pins |
+| `src/channels.js`, `src/smoothing.js` | Landmark revival, One-Euro filters, critically-damped springs, fixed substeps |
+| `src/eyes.js`, `src/pose.js` | Blink scheduler, saccades, gaze, head quaternion, inertia, drag |
+| `src/emotions.js`, `src/drag.js` | FACS presets/read-back and click-drag editing |
+| `src/headAsset.js`, `src/renderer.js` | GLB loader, procedural head, Mirror Skin, three.js renderer |
+| `src/recorder.js`, `src/perf.js`, `src/ui.js` | Recording/export, adaptive quality, 3D studio controls |
+| `vendor/`, `assets/` | Pinned three.js, MediaPipe Tasks Vision/WASM, and face-landmarker model |
+| `tools/` | Puppet build, verification, mock-DOM harness, and static dev server |
 
-Every producer (camera, drag, emotion, record-playback, manual sliders, idle)
-writes its own layer; `rig.update` merges them explicitly:
+### 3D studio controls and exports
 
-```
-w_final = pin ? manual : clamp01(max(cam · camW, emotion · intensity) + dragAdd)
-```
+Press **C** (or the Help panel button) to calibrate. Hold **SPACE** while each
+prompt shows; cancel with Esc.
 
-## Calibrate (2 minutes, makes the app feel right)
-
-Press **C** (or the Help panel button). Hold **SPACE** (or the hold button)
-while each prompt shows; cancel any time with Esc.
-
-1. **Neutral** — relax, 60 frames (median baseline + noise floor per channel).
-2. **Mouth range** — wide-open mouth, then a big smile (20 frames each).
+1. **Neutral** — relax for 60 frames (median baseline + noise floor per channel).
+2. **Mouth range** — wide-open mouth, then a big smile.
 3. **Eyes/brows** — squeeze eyes shut, then raise brows high.
-4. **Cheeks + wink** — puff cheeks (sealed lips), then close your **left** eye
-   only (this maps MediaPipe's L/R naming — bilateral pairs are remapped at
-   load, never by flipping sliders).
-5. **Save** — profile stored in `localStorage`; re-run any time.
+4. **Cheeks + wink** — puff cheeks, then close your left eye to map MediaPipe's
+   L/R naming.
+5. **Save** — the profile is stored in `localStorage`.
 
-The wizard's live 52-bar view doubles as the debug display.
+Keyboard: `C` calibrate · `1..7` emotions · `0` reset · `U` undo · `R` record ·
+`M` Mirror Skin · `V` PiP skeleton · `Shift+D` perf HUD · wheel on the head to
+dolly. Long-press an emotion chip to solo/lock. Drag face parts to sculpt;
+edits pin 🔒 so the camera stops overriding them.
 
-## Keyboard
-
-`C` calibrate · `1..7` emotions · `0` reset all · `U` undo drag edit ·
-`R` record · `M` Mirror Skin · `V` PiP skeleton · `Shift+D` perf HUD ·
-`Esc` release drag / close wizard · wheel on head = dolly.
-
-Long-press an emotion chip = solo/lock. Drag face parts to sculpt (mouth
-corners, lips, brows, chin, nose, lids, jaw sides, cheeks — 16 control
-points); edits pin 🔒 so the camera stops overriding them.
-
-## Export
-
-- **.json** — 52 channels × 30 fps clip (portable, up to 300 s).
-- **.anim.glb** — morph-animated glTF clip (52 weights animated on a head
-  proxy; opens in any glTF viewer).
-- **head .glb** — the current head with morphs baked in (a usable 3D image to
-  keep). Drop any ARKit-52 head onto the canvas (or into `assets/head.glb`)
-  any time; name variants like `mouth_smile_left` are auto-corrected with a
-  warning, missing channels disable instead of crashing.
+Exports include `.json` clips, morph-animated `.anim.glb` clips, and the
+current head as `.glb`. Drop an ARKit-52 head GLB onto the studio canvas (or
+into `assets/head.glb`) to use it instead of the procedural fallback.
 
 ## Tests
 
+Install the test dependency once, then run the full suite:
+
 ```bash
-npm test                    # FaceMirror-3D suites + legacy puppet checks
-npm run test:3d             # pure-math suites + headless FakeDetector smoke
-npm run test:puppet         # generated-page check + math + mock-DOM harness
+npm install
+npm test
 ```
 
-The FaceMirror-3D suites include 80 tests across One-Euro lag/jitter, spring
-stability, blink-scheduler statistics (2-minute sim), saccade main sequence,
-emotion classification (contempt ≠ joy), symmetrize, Jacobian-solver
-convergence, stabilizeBlink, dead-channel anti-gating (head rotation must not
-fake a jaw shift), calibration math, and GLB export parse-back. The smoke
-harness runs the full solve chain with
-`window.__FACEMIRROR_FAKE = 'happy|blink|turn|nosecret'` — no webcam, no DOM.
+- `npm run test:3d` — pure-math suites and headless FakeDetector smoke test.
+- `npm run test:puppet` — verifies `index.html` and `puppet.html` are current,
+  runs 38 math checks, and executes the main page in a mock-DOM harness (56
+  behavioral assertions, including ear recess/swing/tuck and far-ear fade).
 
-The legacy puppet suite verifies that `puppet.html` is current, runs 38
-pure-math checks and 56 mock-DOM behavioural assertions, including ear
-recess/swing/tuck and far-ear fade through both turn directions.
+The 3D suites cover One-Euro lag/jitter, spring stability, blink scheduling,
+saccades, emotion classification, Jacobian-solver convergence, calibration,
+and GLB export. The smoke harness runs the solve chain with
+`window.__FACEMIRROR_FAKE = 'happy|blink|turn|nosecret'` — no webcam or DOM.
 
-## Manual checklist (2 minutes, in the browser)
+## Manual browser checks
 
-1. **Mirror on** → talk, nod, smile: avatar follows, no jitter, no frozen lids.
-2. **Look 45° away**: tracking holds (up to ~80°).
-3. **Cover the camera 3 s**: settles into breathing idle + occasional blinks —
-   not a frozen stare. Uncover: snaps back to live.
-4. **Blink at profile**: never a one-eyed blink (stabilizeBlink).
-5. **Drag a mouth corner**: smile tracks the cursor, 🔒 pins appear on the
-   edited channels, `U` undoes, `0` resets everything.
-6. **Emotion chips** (keys 1–7): ~0.8 s spring in with slight overshoot; your
-   mouth still talks through the preset; long-press = lock; read-back row shows
-   "You: joy 62%".
-7. **Shift+D**: HUD shows fps, per-stage ms, heap, tier; abuse the CPU and
-   watch the tier toast down (and back up after 5 s of headroom).
-8. **R** to record a few seconds → ▶ plays back as the camera producer →
-   export `.json` and `.anim.glb`; open the `.anim.glb` at
-   <https://gltf-viewer.donmccurdy.com> (or Blender) — morphs + clip intact.
-9. Drop a head `.glb` on the canvas: warnings list any non-ARKit morph names;
-   all 52 sliders still drive the head.
+**Main puppet:** choose a portrait → enable webcam → nod, turn, smile, and
+speak; drag landmarks or use expression presets; save a PNG and record a short
+WebM. Try minimizing the webcam preview while tracking continues.
 
-## Performance notes (4 GB target)
+**3D studio:** enable Mirror and test expressions, blinks, and head turns; cover
+the camera briefly to check idle behavior; calibrate, drag a mouth corner,
+record and export a `.json` / `.anim.glb`, then drop in a head `.glb`.
 
-- Whole tab ≤ ~600 MB; detection ≤ 30 ms/frame at 640×480; render ~60 fps on
-  Intel UHD-class GPUs. The governor (p95 of 120 frame times) steps quality
-  1.25 → 1.0 → 0.85 render scale → every-2nd-frame detection → no detail
-  normal → 30 fps cap, and back up when there's headroom.
-- All hot arrays are preallocated — no per-frame allocations in the tracker or
-  solver loops (GC pauses read as face stutter on 4 GB machines).
-- Startup prints a self-check report to the console; the HUD's heap readout
-  warns above 700 MB.
+## 3D studio notes and limits
 
-## Known honesty limits
-
-1. **>80° turns lose tracking** — that is the model's spec, not a bug in this
-   app; the face-landmarker simply has no face to track past there.
-2. **Glasses, beards, and motion blur soften expressions** — landmark and
-   blendshape quality degrade with heavy occlusion and blur.
-3. **Photoreal-scan looks need the drop-in GLB** — the app ships its decent
-   procedural fallback head plus the webcam "Mirror Skin" until you supply
-   `assets/head.glb` with ARKit-52 morphs.
+The 3D renderer adapts quality to CPU/GPU headroom, targeting about 60 fps on
+Intel UHD-class hardware and a 4 GB machine. Frames never leave the browser.
+Glasses, beards, motion blur, and turns beyond roughly 80° can reduce tracking
+quality; photoreal scans require supplying an ARKit-52 head GLB.

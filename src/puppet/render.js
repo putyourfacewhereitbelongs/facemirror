@@ -21,7 +21,9 @@
 (function (root) {
   'use strict';
   const FM = root.FM, E = root.FMEngine;
-  const { clamp, clamp01, lerp, envelope, polyOK, bounds, m3, v3, matFromQuat } = FM;
+  const { clamp, clamp01, envelope, polyOK, bounds, v3, matFromQuat } = FM;
+  const EAR_SWING_GAIN = 0.5;
+  const EAR_TRI_WEIGHT = 0.12;
 
   function makeCanvas(w, h) {
     const c = root.document.createElement('canvas');
@@ -72,11 +74,11 @@
       W: 0, H: 0, ready: false,
       S2: null, DST: null, BASE: null, depth: null, normals: null, normalsFace: null,
       earW: null, earOff: null,
-      passes: null, proj: null, arches: null,
+      passes: null, proj: null, proj0: null, arches: null,
       cache: { enamel: enamelTexture(), noise: noiseTexture(96), iris: [null, null], sclera: ['235,230,225', '235,230,225'], plate: null, lum: 0.7, warm: 0.5 },
       hair: { x: 0, y: 0, vx: 0, vy: 0 },
       lidSkin: [null, null], jaw: 0, openEnv: 0,
-      frames: 0, stats: { tris: 0, culled: 0, earBand: 0, earFaded: 0 }, lastDebug: null
+      frames: 0, stats: { tris: 0, culled: 0, earBand: 0, earFaded: 0, earDetailSkipped: 0 }, lastDebug: null
     };
   }
 
@@ -223,11 +225,11 @@
         dkey: new Float32Array(list.length / 3),
         tmp: new Int32Array(list.length / 3),
         mergeFallbacks: 0, initialized: false,
-        pad: o.pad, cull: o.cull, mirror: o.mirror !== false
+        pad: o.pad, cull: o.cull, mirror: o.mirror !== false, detail: !!o.detail
       };
     };
     S.triA = mkPass(spec.mesh.base, S.normals, { pad: 0.9, cull: -0.02, mirror: true });
-    S.triB = mkPass(spec.mesh.face, S.normalsFace, { pad: 0.95, cull: -0.05, mirror: true });
+    S.triB = mkPass(spec.mesh.face, S.normalsFace, { pad: 0.95, cull: -0.05, mirror: true, detail: true });
     S.mid = spec.head.mid.slice();
     S.axis = E.tmjAxis(spec.head);
     S.arches = buildArches();
@@ -287,6 +289,7 @@
        difference between the rotated and the unrotated projection   */
     const proj0 = projWith([1, 0, 0, 0, 1, 0, 0, 0, 1]);
     S.proj = proj;
+    S.proj0 = proj0;
     const body = st.bodyAt || null;
     for (let i = 0; i < n; i++) {
       S.earOff[i * 2] = 0; S.earOff[i * 2 + 1] = 0;
@@ -304,31 +307,28 @@
                         : proj([S.BASE[i * 3], S.BASE[i * 3 + 1], S.BASE[i * 3 + 2]]);
       let dx = (p1[0] - p0[0]) * w, dy = (p1[1] - p0[1]) * w;
       /* ---- ear swing -------------------------------------------------
-         The shell warp above is expression-only (p1 and p0 share the
-         pose), which is fine for the face interior but leaves the
-         ears glued to the frontal silhouette through a turn: the far
-         ear never tucks behind the jaw and the near ear never
-         foreshortens.  Ear-band vertices therefore also take a
-         fraction of their *true* rotational displacement (rotated
-         projection minus identity projection of the canonical point).
-         The band weight fades to zero on the cheek, so the ear stays
-         anchored there while its outer edge swings; far and near
-         asymmetry (and pitch/roll coupling) fall out of the rotation
-         itself.  The gain is kept below 1 so the displacement
-         gradient across the cheek falloff can never fold a triangle,
-         and the term is identically zero at rest pose -> the frontal
-         photo is untouched and a held pose stays still.            */
+         Keep the frontal photo fixed, but give ear-band pixels a smooth
+         partial head turn so the near ear foreshortens and the far ear
+         tucks away. Use the same fractional rotation for the depth key as
+         for the screen displacement; mixing partial x/y with full-turn z
+         makes the painter sort put ears over the cheek on a turn.       */
       const ew = S.earW[i];
+      let depth1 = p1[2];
       if (ew > 0.003) {
         const bp = isFace ? [head.P[i][0], head.P[i][1], head.P[i][2] * (1 + zc)]
                           : [S.BASE[i * 3], S.BASE[i * 3 + 1], S.BASE[i * 3 + 2]];
         const pr = proj(bp), pi = proj0(bp);
-        const g = ew * w * 0.5;
+        const earTurn = clamp01(ew * EAR_SWING_GAIN);
+        const g = earTurn * w;
         const ex = (pr[0] - pi[0]) * g, ey = (pr[1] - pi[1]) * g;
         if (isFinite(ex) && isFinite(ey)) {
           dx += ex; dy += ey;
           S.earOff[i * 2] = ex; S.earOff[i * 2 + 1] = ey;
         }
+        /* Preserve expression depth while applying only the ear's partial
+           rotational depth. This keeps depth sorting coherent with its
+           visible 2D displacement at every yaw, pitch, and roll. */
+        depth1 = pi[2] + (pr[2] - pi[2]) * earTurn + (p1[2] - pr[2]);
       }
       if (mesh.kind[i] === 1 && hg > 0) {
         const info = mesh.ringOf[i];
@@ -338,7 +338,7 @@
       }
       S.DST[i * 2] = sx + dx;
       S.DST[i * 2 + 1] = sy + dy;
-      S.depth[i] = p1[2] * w + S.BASE[i * 3 + 2] * (1 - w) * 0.4;
+      S.depth[i] = depth1 * w + S.BASE[i * 3 + 2] * (1 - w) * 0.4;
     }
     if (st.limits !== false) {
       limits(head, C, (out) => {
@@ -432,9 +432,10 @@
       }
     }
     const R = matFromQuat(st.q);
+    const turnBlend = clamp01(Math.hypot(st.q[0], st.q[1], st.q[2]) / 0.12);
     const midX = S.mid[0];
     const pad = pass.pad * (o.padScale || 1);
-    let drawn = 0, culled = 0, earBand = 0, earFaded = 0;
+    let drawn = 0, culled = 0, earBand = 0, earFaded = 0, earDetailSkipped = 0;
     for (let t = 0; t < m; t++) {
       const tri = order[t] * 3;
       const a = list[tri], b = list[tri + 1], c = list[tri + 2];
@@ -448,7 +449,12 @@
          ear turns away, fade into the (unmirrored) edge-extended
          plate while the ear swing tucks them behind the jaw.       */
       const earF = pass.earF ? pass.earF[order[t]] : 0;
-      const isEar = earF > 0.30;
+      const isEar = earF > EAR_TRI_WEIGHT;
+      /* The dense face-detail pass is painted after the whole shell. Letting
+         its ear triangles through would draw them over nearer hair/cheek
+         triangles regardless of shell depth. The base pass owns this band:
+         it sorts ear, face, and hair together and still provides the texture. */
+      if (pass.detail && isEar) { earDetailSkipped++; continue; }
       const ax = DST[a * 2], ay = DST[a * 2 + 1];
       const bx = DST[b * 2], by = DST[b * 2 + 1];
       const cx = DST[c * 2], cy = DST[c * 2 + 1];
@@ -499,13 +505,12 @@
         if (isEar && S.cache.plate) {
           /* far ear melts into the edge-extended plate as its normal
              turns away — a continuous fade in nz, no binary switch.
-             A folded ear triangle (destination winding flipped vs the
-             source, which the swing gradient is tuned to avoid but a
-             skinny tessellation triangle can still do at the yaw cap)
-             is covered outright: flipped pinna texture is the one
-             thing this band must never show.                        */
+             source. A skinny tessellation triangle can still fold at a
+             hard turn, so ramp the plate replacement with turn strength:
+             this hides flipped pinna texture without fading fringe
+             triangles in the untouched frontal pose.                 */
           const folded = (det < 0) !== (area < 0);
-          const fade = folded ? 1 : clamp01((-nz - 0.04) / 0.28) * clamp01(earF * 1.7);
+          const fade = folded ? turnBlend : clamp01((-nz - 0.04) / 0.28) * clamp01(earF * 1.7);
           if (fade > 0.01) {
             ctx.globalAlpha = fade;
             try { ctx.drawImage(S.cache.plate, x0, y0, sw, sh, x0, y0, sw, sh); } catch (e) {}
@@ -521,6 +526,7 @@
     S.stats.tris += drawn; S.stats.culled = (S.stats.culled || 0) + culled;
     S.stats.earBand = (S.stats.earBand || 0) + earBand;
     S.stats.earFaded = (S.stats.earFaded || 0) + earFaded;
+    S.stats.earDetailSkipped = (S.stats.earDetailSkipped || 0) + earDetailSkipped;
     return drawn;
   }
 
@@ -728,7 +734,7 @@
     fr.org[2] + fr.ax[2] * u + fr.ay[2] * v + fr.az[2] * w
   ];
   /* Draw one rigid dental arch and return visibility diagnostics. The
-     upper arch is painted after the tongue to restore front-to-back order. */
+     upper arch completes the front-to-back dental order. */
   function drawArch(S, ctx, proj3, fr, which, openAmt, cfg) {
     /* cfg = { vis, bright, warmth } straight from the sliders */
     const { TW, TH, DEPTH } = S.arches;
@@ -850,83 +856,6 @@
     return true;
   }
 
-  function drawTongue(S, ctx, fr, proj3, D, st, h) {
-    const tg = clamp01(st.tongue);
-    if (tg < 0.02) return false;
-    const In = E.LIPS_I.map(i => D[i]);
-    if (!polyOK(In, 2.5)) return false;
-    const mw = fr.mw, gap = Math.max(0, st.gap || 0);
-    const len = mw * (0.20 + 0.62 * tg) + gap * 0.30;
-    const half = mw * (0.13 + 0.09 * tg);
-    const sec = [];
-    const S5 = 5;
-    for (let s = 0; s <= S5; s++) {
-      const t = s / S5;
-      const w = half * (0.5 + 0.6 * Math.sin(Math.PI * Math.min(1, 0.18 + t * 0.82)));
-      const v = fr.loY + gap * 0.06 + t * (gap * 0.26 + mw * 0.06) * (0.6 + 0.4 * tg);
-      const z = -mw * 0.10 + t * len;
-      sec.push({ l: proj3(mfp(fr, -w, v, z)), r: proj3(mfp(fr, w, v, z)), m: proj3(mfp(fr, 0, v, z)), t, w });
-    }
-    if (!sec.every(s => isFinite(s.l[0]) && isFinite(s.r[0]) && isFinite(s.m[0]))) return false;
-    const bb = bounds(sec.flatMap(s => [s.l, s.r]));
-    if (!(bb.w > 1 && bb.h > 1)) return false;
-    ctx.save();
-    ctx.beginPath();
-    In.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
-    ctx.closePath();
-    ctx.clip();
-    const path = () => {
-      ctx.beginPath();
-      ctx.moveTo(sec[0].l[0], sec[0].l[1]);
-      for (let i = 1; i < sec.length; i++) ctx.lineTo(sec[i].l[0], sec[i].l[1]);
-      for (let i = sec.length - 1; i >= 0; i--) ctx.lineTo(sec[i].r[0], sec[i].r[1]);
-      ctx.closePath();
-    };
-    const g = ctx.createLinearGradient(sec[0].m[0], sec[0].m[1], sec[sec.length - 1].m[0], sec[sec.length - 1].m[1]);
-    g.addColorStop(0, 'rgba(140,54,68,1)');
-    g.addColorStop(.5, 'rgba(200,100,112,1)');
-    g.addColorStop(1, 'rgba(222,132,140,1)');
-    ctx.globalAlpha = clamp01(0.4 + 0.6 * h);
-    path();
-    ctx.fillStyle = g;
-    ctx.fill();
-    ctx.save();
-    path(); ctx.clip();
-    let s2 = 12345;
-    const rnd = () => (s2 = (s2 * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
-    const first = sec[0].m, last = sec[sec.length - 1].m;
-    for (let i = 0; i < 80; i++) {
-      const t = rnd(), u = rnd();
-      const x = lerp(first[0], last[0], t) + (u - .5) * half * 1.7;
-      const y = lerp(first[1], last[1], t);
-      ctx.beginPath();
-      ctx.arc(x, y, i % 3 ? 0.9 : 1.4, 0, 7);
-      ctx.fillStyle = 'rgba(255,206,212,.15)';
-      ctx.fill();
-    }
-    ctx.strokeStyle = 'rgba(120,26,42,.42)';
-    ctx.lineWidth = Math.max(1.2, half * 0.16);
-    ctx.beginPath();
-    ctx.moveTo(first[0], first[1]);
-    for (let i = 1; i < sec.length; i++) ctx.lineTo(sec[i].m[0], sec[i].m[1]);
-    ctx.stroke();
-    const tip = sec[sec.length - 1].m;
-    const sg = ctx.createRadialGradient(tip[0], tip[1], 1, tip[0], tip[1], Math.max(3, half * 1.5));
-    sg.addColorStop(0, 'rgba(255,222,226,.32)');
-    sg.addColorStop(1, 'rgba(255,222,226,0)');
-    ctx.fillStyle = sg;
-    ctx.fillRect(bb.x0 - 4, bb.y0 - 4, bb.w + 8, bb.h + 8);
-    const sh = ctx.createLinearGradient(0, bb.y0, 0, bb.y0 + bb.h * 0.5);
-    sh.addColorStop(0, 'rgba(58,12,20,.5)');
-    sh.addColorStop(1, 'rgba(58,12,20,0)');
-    ctx.fillStyle = sh;
-    ctx.fillRect(bb.x0 - 4, bb.y0 - 4, bb.w + 8, bb.h * 0.55);
-    ctx.restore();
-    ctx.globalAlpha = 1;
-    ctx.restore();
-    return true;
-  }
-
   function drawShading(S, ctx, D, st) {
     const yaw = E.eulerYaw(st.q);
     const amt = clamp01(Math.abs(yaw) * 0.9 * (st.shade || 0));
@@ -958,7 +887,7 @@
     const C = deform(S, st);
     const D = new Array(478);
     for (let i = 0; i < 478; i++) D[i] = { x: S.DST[i * 2], y: S.DST[i * 2 + 1], z: S.depth[i] };
-    S.stats.tris = 0; S.stats.culled = 0; S.stats.earBand = 0; S.stats.earFaded = 0;
+    S.stats.tris = 0; S.stats.culled = 0; S.stats.earBand = 0; S.stats.earFaded = 0; S.stats.earDetailSkipped = 0;
     /* ---- compose the shell on the layer, then blit once ------------ */
     lc.setTransform(1, 0, 0, 1, 0, 0);
     lc.clearRect(0, 0, S.W, S.H);
@@ -969,7 +898,7 @@
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, S.W, S.H);
     let mw = 0, gap = 0, h = S.openEnv;
-    const oral = { cavity: false, lowerTeeth: 0, lowerAlpha: 0, tongue: false, upperTeeth: 0, upperAlpha: 0, lips: false };
+    const oral = { cavity: false, lowerTeeth: 0, lowerAlpha: 0, upperTeeth: 0, upperAlpha: 0, lips: false };
     if (st.origOnly) {
       ctx.drawImage(S.src, 0, 0);
     } else {
@@ -987,7 +916,6 @@
       const openAmt = clamp01(h * 1.1);
       const lower = drawArch(S, ctx, proj3, fr, 'lo', openAmt, st);
       oral.lowerTeeth = lower.drawnTeeth; oral.lowerAlpha = lower.alphaSum;
-      oral.tongue = drawTongue(S, ctx, fr, proj3, D, { tongue: st.tongue, gap: gap + mw * 0.035 }, h) === true;
       const upper = drawArch(S, ctx, proj3, fr, 'up', openAmt, st);
       oral.upperTeeth = upper.drawnTeeth; oral.upperAlpha = upper.alphaSum;
       oral.lips = drawLips(S, ctx, D, mw, gap) === true;
@@ -1034,7 +962,8 @@
       ctx.restore();
     }
     const dbg = { tris: S.stats.tris, culled: S.stats.culled,
-                  ear: { band: S.stats.earBand || 0, faded: S.stats.earFaded || 0 },
+                  ear: { band: S.stats.earBand || 0, faded: S.stats.earFaded || 0,
+                         detailSkipped: S.stats.earDetailSkipped || 0 },
                   mouth: { mw, gap, h, ...oral }, jaw: S.jaw };
     S.lastDebug = dbg;
     return dbg;

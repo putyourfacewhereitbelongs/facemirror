@@ -1,6 +1,6 @@
 /* =====================================================================
    FaceMirror · pure math core  (no DOM, no canvas)
-   Loaded as a classic script in the browser and inlined into puppet.html.
+   Loaded as a classic script in the browser and inlined into index.html + puppet.html.
    Exposed on globalThis.FM so both the app module and the Node test
    harness (tools/verify.mjs) can exercise exactly the same code.
 
@@ -512,7 +512,7 @@
     }
     return out;
   }
-  /* Catmull-Rom arc between three points, used by the tongue/teeth paths */
+  /* Quadratic Bezier point through endpoints a/c with control point b. */
   function quadPoint(a, b, c, t) {
     const u = 1 - t;
     return [u * u * a[0] + 2 * u * t * b[0] + t * t * c[0], u * u * a[1] + 2 * u * t * b[1] + t * t * c[1]];
