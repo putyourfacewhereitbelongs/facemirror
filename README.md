@@ -6,7 +6,8 @@ save a PNG or record a WebM. The FaceMirror-3D experience is still included as
 a separate studio at [`studio.html`](studio.html).
 
 - **Your face stays local.** Webcam frames are processed in the browser and are
-  never uploaded. The puppet loads MediaPipe and its models from public CDNs.
+  never uploaded. The puppet uses its bundled MediaPipe runtime, WASM, and face
+  model first, with a pinned CDN fallback if a deployment is missing an asset.
 - **Static app.** No backend or build tool is needed to run the committed pages.
 - **Works without a webcam.** Choose a portrait and use the sculpting and
   expression tools manually.
@@ -41,9 +42,11 @@ with sculpt tools, procedural teeth, PNG capture, and WebM recording.
 Head turns use a geometrically derived ear band recessed behind the cheek; the
 far ear tucks behind the jaw and fades into an edge-extended plate.
 
-The puppet page loads MediaPipe Tasks Vision and its face/pose models from
-CDNs. Tracking and rendering run in the browser; the Delaunay triangulation
-used by the build/test tooling uses the `delaunator` npm package.
+The puppet page loads the vendored MediaPipe Tasks Vision runtime, WASM, face
+model, and Delaunay triangulator locally, so webcam expressions and head turns
+do not depend on a live CDN. Pinned CDN fallbacks remain for deployments with
+missing assets; the optional shoulder/body tracker loads in the background and
+cannot block face tracking from starting.
 
 ## FaceMirror-3D Studio
 

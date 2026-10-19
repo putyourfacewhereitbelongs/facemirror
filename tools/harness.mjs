@@ -21,6 +21,7 @@
    usage:  node tools/harness.mjs [--verbose]
    ===================================================================== */
 import { readFile } from 'node:fs/promises';
+import { runInNewContext } from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import Delaunator from 'delaunator';
@@ -76,17 +77,30 @@ const W = 640, H = 480, FACE_PX = 256;
 const P0 = synthFace();
 const tess = synthTessellation(P0);
 
+const runtimeRequests = [];
 const vision = {
-  FilesetResolver: { forVisionTasks: async () => ({}) },
+  FilesetResolver: {
+    forVisionTasks: async (path) => {
+      runtimeRequests.push({ type: 'wasm', path });
+      return { path };
+    }
+  },
   FaceLandmarker: {
     FACE_LANDMARKS_TESSELATION: tess,
-    createFromOptions: async (fs, opts) => ({
-      _mode: opts.runningMode,
-      detect: () => ({ faceLandmarks: [toLandmarks(P0, W, H, FACE_PX)] }),
-      detectForVideo: () => ({ faceLandmarks: [toLandmarks(P0, W, H, FACE_PX)], faceBlendshapes: [{ categories: [] }] })
-    })
+    createFromOptions: async (fs, opts) => {
+      runtimeRequests.push({
+        type: 'face', wasm: fs.path, model: opts.baseOptions.modelAssetPath, delegate: opts.baseOptions.delegate
+      });
+      return {
+        _mode: opts.runningMode,
+        detect: () => ({ faceLandmarks: [toLandmarks(P0, W, H, FACE_PX)] }),
+        detectForVideo: () => ({ faceLandmarks: [toLandmarks(P0, W, H, FACE_PX)], faceBlendshapes: [{ categories: [] }] })
+      };
+    }
   },
-  PoseLandmarker: { createFromOptions: async () => ({ detect: () => ({ landmarks: [] }), detectForVideo: () => ({ landmarks: [] }) }) }
+  // Simulate a stalled optional pose-model download; face tracking must not
+  // wait for it to expose the webcam button.
+  PoseLandmarker: { createFromOptions: () => new Promise(() => {}) }
 };
 await globalThis.PuppetApp.boot(vision);
 const T = globalThis.PuppetApp.__test;
@@ -94,6 +108,35 @@ const T = globalThis.PuppetApp.__test;
 section('page / script agreement');
 ok('every element the app looks up exists in the main index.html', missing.size === 0,
    missing.size ? 'missing: ' + [...missing].join(', ') : '(0 misses)');
+const localRuntimeImport = html.indexOf("import('./vendor/tasks-vision/vision_bundle.mjs')");
+const cdnRuntimeFallback = html.indexOf("import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.0/vision_bundle.mjs')");
+ok('default page prefers the bundled MediaPipe runtime', localRuntimeImport >= 0 && cdnRuntimeFallback > localRuntimeImport);
+ok('default page prefers local WASM and face-model assets',
+   html.includes("wasm: './vendor/tasks-vision/wasm'") && html.includes("faceModel: './assets/face_landmarker.task'"));
+ok('default page loads Delaunator locally', html.includes('<script src="./vendor/delaunator.min.js"></script>'));
+const localTrackingAssets = [
+  'vendor/delaunator.min.js',
+  'vendor/tasks-vision/vision_bundle.mjs',
+  'vendor/tasks-vision/wasm/vision_wasm_internal.wasm',
+  'vendor/tasks-vision/wasm/vision_wasm_nosimd_internal.wasm',
+  'assets/face_landmarker.task'
+];
+const localTrackingAssetsPresent = (await Promise.all(localTrackingAssets.map(async (file) => {
+  const data = await readFile(join(rootDir, file)).catch(() => null);
+  return !!data && data.byteLength > 0;
+}))).every(Boolean);
+ok('all local face-tracking assets are present', localTrackingAssetsPresent, localTrackingAssets.join(', '));
+const browserDelaunator = {};
+browserDelaunator.globalThis = browserDelaunator;
+runInNewContext(await readFile(join(rootDir, 'vendor/delaunator.min.js'), 'utf8'), browserDelaunator);
+const testPoints = [[0, 0], [1, 0], [0, 1], [1, 1]];
+const bundledTriangles = typeof browserDelaunator.Delaunator === 'function'
+  ? [...browserDelaunator.Delaunator.from(testPoints).triangles] : [];
+ok('bundled Delaunator runs and triangulates in a browser global',
+   bundledTriangles.length > 0 && bundledTriangles.join(',') === [...Delaunator.from(testPoints).triangles].join(','));
+ok('boot uses the local face model and WASM first', runtimeRequests.some((r) =>
+  r.type === 'face' && r.wasm === './vendor/tasks-vision/wasm' && r.model === './assets/face_landmarker.task'));
+ok('webcam becomes available without waiting for optional pose tracking', !dom.byId.get('camBtn').disabled);
 
 /* Camera tracking is mirrored. The still snapshot must use the same frame,
    or the neutral pose and photo have opposite handedness. */
