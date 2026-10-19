@@ -265,6 +265,58 @@ const mergedOrder = checkPaintOrder(ses);
 ok('stable merge fallback repairs adversarial prior order', forcedFallbacks === sortPasses.length && mergedOrder.ok,
    `${forcedFallbacks}/${sortPasses.length} passes fell back; ${mergedOrder.msg}`);
 
+section('ears through a turn');
+/* MediaPipe has no pinna landmarks, so the engine derives an ear band
+   around the tragion landmarks (234 / 454).  These checks pin down the
+   turn behaviour that used to break: ears glued to the frontal
+   silhouette, mirror-flipped at the cull threshold, and the near ear
+   sorting in front of the nose.                                     */
+ok('ear band peaks at the tragion landmarks and vanishes mid-face',
+   !!mesh.earW && mesh.earW[234] > 0.75 && mesh.earW[454] > 0.75 && mesh.earW[4] < 0.01 && mesh.earW[61] < 0.01,
+   `earW 234:${mesh.earW ? mesh.earW[234].toFixed(2) : 'missing'} 454:${mesh.earW ? mesh.earW[454].toFixed(2) : 'missing'} nose:${mesh.earW ? mesh.earW[4].toExponential(1) : '?'}`);
+ok('ears are recessed behind the cheek / eye plane',
+   head.P[234][2] < head.P[33][2] - head.fw * 0.02 && head.P[454][2] < head.P[263][2] - head.fw * 0.02,
+   `z ear ${head.P[234][2].toFixed(1)}/${head.P[454][2].toFixed(1)} vs eye corners ${head.P[33][2].toFixed(1)}/${head.P[263][2].toFixed(1)}`);
+const earAt = yaw => {
+  const dbg = renderAt(FM.quatFromYPR(yaw, 0, 0));
+  return { dbg, l: ses.DST[234 * 2], r: ses.DST[454 * 2], nose: ses.DST[4 * 2],
+           dl: ses.depth[234], dr: ses.depth[454], dn: ses.depth[4],
+           off: Math.max(...Array.from(ses.earOff, Math.abs)) };
+};
+const eRest = earAt(0), ePos = earAt(0.6), eNeg = earAt(-0.6);
+ok('ear swing is identically zero at rest (frontal photo untouched)',
+   eRest.off < 1e-9 && eRest.dbg.ear.faded === 0 && eRest.dbg.ear.band > 0,
+   `max |earOff| ${eRest.off}, faded ${eRest.dbg.ear.faded}, band ${eRest.dbg.ear.band} tris`);
+const width = e => e.r - e.l;
+ok('both turn directions foreshorten the ear-to-ear width',
+   width(ePos) < width(eRest) - 8 && width(eNeg) < width(eRest) - 8,
+   `${width(eRest).toFixed(1)} rest -> ${width(ePos).toFixed(1)} @+0.6, ${width(eNeg).toFixed(1)} @-0.6`);
+/* far ear (smaller depth key) must tuck toward the midline farther
+   than the near ear, in both directions */
+const tuck = (e, farLeft) => farLeft
+  ? { far: e.l - eRest.l, near: eRest.r - e.r }
+  : { far: eRest.r - e.r, near: e.l - eRest.l };
+const tPos = tuck(ePos, ePos.dl < ePos.dr), tNeg = tuck(eNeg, eNeg.dl < eNeg.dr);
+ok('far ear tucks behind the jaw more than the near ear moves',
+   tPos.far > tPos.near + 4 && tNeg.far > tNeg.near + 4 && Math.min(ePos.dl, ePos.dr) < 0 && Math.min(eNeg.dl, eNeg.dr) < 0,
+   `@+0.6 far ${tPos.far.toFixed(1)}px vs near ${tPos.near.toFixed(1)}px; @-0.6 far ${tNeg.far.toFixed(1)}px vs near ${tNeg.near.toFixed(1)}px`);
+ok('near ear never sorts in front of the nose',
+   Math.max(ePos.dl, ePos.dr) < ePos.dn && Math.max(eNeg.dl, eNeg.dr) < eNeg.dn,
+   `@+0.6 ear depth ${Math.max(ePos.dl, ePos.dr).toFixed(1)} vs nose ${ePos.dn.toFixed(1)}`);
+ok('far ear fades into the plate on a turn (no mirrored ears)',
+   ePos.dbg.ear.faded > 0 && eNeg.dbg.ear.faded > 0,
+   `faded ear tris @+0.6: ${ePos.dbg.ear.faded}, @-0.6: ${eNeg.dbg.ear.faded} (band ${ePos.dbg.ear.band})`);
+/* the swing must be a continuous function of yaw: step across zero in
+   fine increments and bound the largest ear-landmark jump */
+let earJump = 0, ePrev = earAt(-0.7);
+for (let yaw = -0.66; yaw <= 0.701; yaw += 0.04) {
+  const e = earAt(yaw);
+  earJump = Math.max(earJump, Math.abs(e.l - ePrev.l), Math.abs(e.r - ePrev.r));
+  ePrev = e;
+}
+ok('ear swing has no step at the mirror threshold', earJump < head.fw * 0.02,
+   `largest ear jump ${earJump.toFixed(2)} px per 0.04 rad step`);
+
 section('mouth interior');
 const outputCtx = dom.byId.get('puppet').getContext('2d');
 const toothVisibility = dom.byId.get('tv');

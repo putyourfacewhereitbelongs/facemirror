@@ -109,6 +109,24 @@
     }
     return [cx / n, cy / n];
   }
+  /* Ear band weight in [0,1] for a canonical point.  MediaPipe has no
+     pinna landmarks: 234 / 454 sit at the tragion (the notch just in
+     front of the ear canal) and the visible ear in a frontal photo
+     lives on those landmarks and in the shell band just outside the
+     oval.  The band is therefore derived geometrically — full weight
+     at the lateral oval edge at tragion height, falling to zero on
+     the cheek (so the cheek anchors the ear) and above / below the
+     pinna.  Used for the depth recess below, the ring back-bend in
+     buildMesh and the renderer's ear swing / sampling rules.        */
+  function earWeightAt(fw, fh, midX, earY, x, y) {
+    /* the lateral falloff is deliberately wide: the renderer's ear
+       swing scales with this weight, and a steep weight gradient
+       across the cheek would fold triangles at full yaw           */
+    const lat = smoothstep(0.25, 0.50, Math.abs(x - midX) / (fw || 1));
+    if (lat <= 0) return 0;
+    const dy = (y - earY) / ((fh || 1) * 0.145);
+    return clamp01(lat * Math.exp(-dy * dy) * 1.35);
+  }
   function buildCanonical(lm, W, H, opts) {
     const o = opts || {};
     const P = new Array(478);
@@ -145,6 +163,21 @@
       const w = sideSet.has(i) ? (o.priorSide === undefined ? 0.62 : o.priorSide) : (o.priorMid === undefined ? 0.22 : o.priorMid);
       z[i] = lerp(P[i][2] - zMean, prior(i), w);
     }
+    /* --- ears sit behind the cheek plane ------------------------------
+       The ellipsoid prior leaves the tragion landmarks almost as far
+       forward as the outer eye corners, so on a yaw their rotated
+       depth key overtakes the nose and the near ear paints over the
+       cheek.  Recess the ear band before smoothing (the Laplacian
+       pass below keeps the transition C1): the tragus ends up behind
+       the cheek edge, which is where it anatomically belongs and how
+       the painter sort has to see it.                                 */
+    const earY = (P[234][1] + P[454][1]) / 2;
+    const earW = new Float32Array(478);
+    const recess = o.earRecess === undefined ? 0.13 : o.earRecess;
+    for (let i = 0; i < 478; i++) {
+      earW[i] = earWeightAt(fw, fh, mid[0], earY, P[i][0], P[i][1]);
+      z[i] -= earW[i] * fw * recess;
+    }
     /* neighbour graph from the official tessellation, if present */
     const adj = o.adjacency;
     if (adj) {
@@ -161,7 +194,7 @@
       }
     }
     for (let i = 0; i < 478; i++) P[i][2] = z[i];
-    return { P, fw, fh, mid, ctr, noseY, W, H };
+    return { P, fw, fh, mid, ctr, noseY, earY, earW, W, H };
   }
   /* convenience: head-local normalised coords of a canonical point */
   function localUV(head, p) {
@@ -177,7 +210,10 @@
     const n0 = P.length;                           // 478
     const w = [];                                  // shell weight per point
     const kind = [];                               // 0 face, 1 ring, 2 skirt
-    for (let i = 0; i < n0; i++) { w.push(1); kind.push(0); }
+    const ear = [];                                // ear band weight per point
+    const earY = head.earY === undefined ? (head.P[234][1] + head.P[454][1]) / 2 : head.earY;
+    const earAt = (x, y) => earWeightAt(head.fw, head.fh, head.mid[0], earY, x, y);
+    for (let i = 0; i < n0; i++) { w.push(1); kind.push(0); ear.push(head.earW ? head.earW[i] : earAt(P[i][0], P[i][1])); }
     /* ---- hair rings: a shell that wraps around the skull -------------
        ring 1 hugs the head (moves with it, hair lag), ring 3 sits well
        behind the head centre so a 45° turn reveals a plausible cranium
@@ -196,12 +232,21 @@
         /* keep the top of each ring a little forward (skull, not sphere) */
         const up = clamp01((head.ctr[1] - y) / (head.fh * 0.9) + 0.5);
         z += R * 0.18 * (1 - up) * 0;
+        /* At ear height the side of the head (and the pinna, whose
+           pixels live in this band) wraps back faster than the
+           hairline does.  Bend the ear band of each ring backward so
+           its depth keys and normals turn away with the head instead
+           of riding in the cheek plane like a flat flap.           */
+        const ew0 = head.earW ? head.earW[c] : earAt(p[0], p[1]);
+        z -= ew0 * R * [0.05, 0.14, 0.26][r];
         x = clamp(x, 0, head.W);
         y = clamp(y, 0, head.H);
         const id = P.length;
         P.push([x, y, z]);
         w.push(wr);
         kind.push(1);
+        /* pinna pixels sit mostly between the oval and ring 1 */
+        ear.push(earAt(x, y) * [1, 0.55, 0.22][r]);
         idxs.push(id);
       }
       rings.push(idxs);
@@ -214,7 +259,7 @@
         const y = chinY + head.fh * 0.35 + (botY - (chinY + head.fh * 0.35)) * (r ? 0.75 : 0.25);
         for (let q = 0; q < 7; q++) {
           const x = head.W * (q + 0.5) / 7;
-          const im = P.length; P.push([x, y, -head.fw * 0.2]); w.push(0); kind.push(2); skirt.push(im);
+          const im = P.length; P.push([x, y, -head.fw * 0.2]); w.push(0); kind.push(2); ear.push(0); skirt.push(im);
         }
       }
     }
@@ -222,7 +267,7 @@
     const corners = [];
     const W = head.W, H = head.H;
     for (const [x, y] of [[0, 0], [W, 0], [W, H], [0, H], [W / 2, 0], [W / 2, H], [0, H / 2], [W, H / 2]]) {
-      const im = P.length; P.push([x, y, -head.fw * 0.4]); w.push(0); kind.push(2); corners.push(im);
+      const im = P.length; P.push([x, y, -head.fw * 0.4]); w.push(0); kind.push(2); ear.push(0); corners.push(im);
     }
     /* ---- triangulate (Delaunator over the source-plane layout) ------- */
     const D = o.delaunay || root.Delaunator;
@@ -257,10 +302,28 @@
       const a = base[i], b = base[i + 1], c = base[i + 2];
       nbr[a].add(b); nbr[b].add(a); nbr[b].add(c); nbr[c].add(b); nbr[c].add(a); nbr[a].add(c);
     }
+    /* Smooth the ear weights over the mesh adjacency.  The analytic
+       band can change faster between two neighbouring vertices (e.g.
+       127 -> 162 above the ear) than the triangle between them is
+       wide; since the renderer's ear swing scales with this weight,
+       an unsmoothed step would shear such a triangle through zero
+       area at full yaw.  A few Laplacian passes bound the
+       per-triangle weight gradient the same way the depth smoother
+       bounds the surface gradient.                                  */
+    for (let it = 0; it < 4; it++) {
+      const prev = ear.slice();
+      for (let i = 0; i < ear.length; i++) {
+        const nb = nbr[i];
+        if (!nb || !nb.size) continue;
+        let s = 0;
+        for (const j of nb) s += prev[j];
+        ear[i] = prev[i] * 0.5 + (s / nb.size) * 0.5;
+      }
+    }
     /* ring index -> face contour index (for the silhouette + hair lag) */
     const ringOf = [];
     for (let r = 0; r < rings.length; r++) for (let k = 0; k < rings[r].length; k++) ringOf.push({ ring: r, contour: k });
-    return { P, w: Float32Array.from(w), kind: Uint8Array.from(kind), rings, skirt, corners, base, face, nbr, ringOf, n: P.length };
+    return { P, w: Float32Array.from(w), kind: Uint8Array.from(kind), earW: Float32Array.from(ear), rings, skirt, corners, base, face, nbr, ringOf, n: P.length };
   }
 
   /* ===================================================================
@@ -669,7 +732,7 @@
     OVAL, CONTOUR, LEYE, REYE, LBROW, RBROW, LIPS_O, LIPS_I, NOSE, UP_LIP, LO_LIP, LIDS, IRIS, EYE_RING,
     RIGID, RIGID_W, EXPR_GAIN, EXPR_CAP, ACTIONS,
     /* geometry */
-    buildCanonical, buildMesh, faceCenterOf, localUV, tmjAxis, jawWeight, applyJaw,
+    buildCanonical, buildMesh, faceCenterOf, earWeightAt, localUV, tmjAxis, jawWeight, applyJaw,
     /* expression */
     zeroActions, PRESETS, talkAt, expressionDelta, mouthState, makeTransfer, retargetResidual, residualEnergy,
     /* tracking */

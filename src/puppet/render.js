@@ -71,11 +71,12 @@
       head: null, mesh: null, src: null, canvas: null, layer: null, lctx: null,
       W: 0, H: 0, ready: false,
       S2: null, DST: null, BASE: null, depth: null, normals: null, normalsFace: null,
+      earW: null, earOff: null,
       passes: null, proj: null, arches: null,
       cache: { enamel: enamelTexture(), noise: noiseTexture(96), iris: [null, null], sclera: ['235,230,225', '235,230,225'], plate: null, lum: 0.7, warm: 0.5 },
       hair: { x: 0, y: 0, vx: 0, vy: 0 },
       lidSkin: [null, null], jaw: 0, openEnv: 0,
-      frames: 0, stats: { tris: 0, culled: 0 }, lastDebug: null
+      frames: 0, stats: { tris: 0, culled: 0, earBand: 0, earFaded: 0 }, lastDebug: null
     };
   }
 
@@ -191,6 +192,8 @@
       S.BASE[i * 3] = p[0]; S.BASE[i * 3 + 1] = p[1]; S.BASE[i * 3 + 2] = p[2];
     }
     S.depth = new Float32Array(n);
+    S.earW = spec.mesh.earW && spec.mesh.earW.length === n ? spec.mesh.earW : new Float32Array(n);
+    S.earOff = new Float32Array(n * 2);   // per-frame ear swing (screen px)
     const mkNormals = (list) => {
       const out = new Float32Array(list.length);
       for (let t = 0; t < list.length; t += 3) {
@@ -207,14 +210,22 @@
     };
     S.normals = mkNormals(spec.mesh.base);
     S.normalsFace = mkNormals(spec.mesh.face);
-    const mkPass = (list, normals, o) => ({
-      list, normals, n: list.length / 3,
-      order: new Int32Array(list.length / 3),
-      dkey: new Float32Array(list.length / 3),
-      tmp: new Int32Array(list.length / 3),
-      mergeFallbacks: 0, initialized: false,
-      pad: o.pad, cull: o.cull, mirror: o.mirror !== false
-    });
+    const mkPass = (list, normals, o) => {
+      /* per-triangle ear factor (mean of its vertices): ear triangles
+         follow different sampling rules in drawShell (no mirroring) */
+      const earF = new Float32Array(list.length / 3);
+      for (let t = 0; t < earF.length; t++) {
+        earF[t] = (S.earW[list[t * 3]] + S.earW[list[t * 3 + 1]] + S.earW[list[t * 3 + 2]]) / 3;
+      }
+      return {
+        list, normals, n: list.length / 3, earF,
+        order: new Int32Array(list.length / 3),
+        dkey: new Float32Array(list.length / 3),
+        tmp: new Int32Array(list.length / 3),
+        mergeFallbacks: 0, initialized: false,
+        pad: o.pad, cull: o.cull, mirror: o.mirror !== false
+      };
+    };
     S.triA = mkPass(spec.mesh.base, S.normals, { pad: 0.9, cull: -0.02, mirror: true });
     S.triB = mkPass(spec.mesh.face, S.normalsFace, { pad: 0.95, cull: -0.05, mirror: true });
     S.mid = spec.head.mid.slice();
@@ -261,19 +272,24 @@
     const ox = st.ox || 0, oy = st.oy || 0, sc = st.scale || 1;
     const zc = st.depthGain || 0;
     const pivotZ = (head.P[10][2] + head.P[152][2]) * 0.5 * zc;
-    const proj = (p) => {
+    const projWith = (Rm) => (p) => {
       const rx = p[0] - cx, ry = p[1] - cy, rz = p[2] - pivotZ;
-      const mx = R[0] * rx + R[1] * ry + R[2] * rz;
-      const my = R[3] * rx + R[4] * ry + R[5] * rz;
-      const mz = R[6] * rx + R[7] * ry + R[8] * rz;
+      const mx = Rm[0] * rx + Rm[1] * ry + Rm[2] * rz;
+      const my = Rm[3] * rx + Rm[4] * ry + Rm[5] * rz;
+      const mz = Rm[6] * rx + Rm[7] * ry + Rm[8] * rz;
       let d = f - mz * sc;
       if (Math.abs(d) < f * 0.25) d = d < 0 ? -f * 0.25 : f * 0.25;
       const k = f / d;
       return [cx + mx * sc * k + ox, cy + my * sc * k + oy, mz];
     };
+    const proj = projWith(R);
+    /* identity-pose projection: the ear swing below is measured as the
+       difference between the rotated and the unrotated projection   */
+    const proj0 = projWith([1, 0, 0, 0, 1, 0, 0, 0, 1]);
     S.proj = proj;
     const body = st.bodyAt || null;
     for (let i = 0; i < n; i++) {
+      S.earOff[i * 2] = 0; S.earOff[i * 2 + 1] = 0;
       const w = mesh.w[i], sx = S.S2[i * 2], sy = S.S2[i * 2 + 1];
       if (w <= 0) {
         let dx = 0, dy = 0;
@@ -287,6 +303,33 @@
       const p0 = isFace ? proj([head.P[i][0], head.P[i][1], head.P[i][2] * (1 + zc)])
                         : proj([S.BASE[i * 3], S.BASE[i * 3 + 1], S.BASE[i * 3 + 2]]);
       let dx = (p1[0] - p0[0]) * w, dy = (p1[1] - p0[1]) * w;
+      /* ---- ear swing -------------------------------------------------
+         The shell warp above is expression-only (p1 and p0 share the
+         pose), which is fine for the face interior but leaves the
+         ears glued to the frontal silhouette through a turn: the far
+         ear never tucks behind the jaw and the near ear never
+         foreshortens.  Ear-band vertices therefore also take a
+         fraction of their *true* rotational displacement (rotated
+         projection minus identity projection of the canonical point).
+         The band weight fades to zero on the cheek, so the ear stays
+         anchored there while its outer edge swings; far and near
+         asymmetry (and pitch/roll coupling) fall out of the rotation
+         itself.  The gain is kept below 1 so the displacement
+         gradient across the cheek falloff can never fold a triangle,
+         and the term is identically zero at rest pose -> the frontal
+         photo is untouched and a held pose stays still.            */
+      const ew = S.earW[i];
+      if (ew > 0.003) {
+        const bp = isFace ? [head.P[i][0], head.P[i][1], head.P[i][2] * (1 + zc)]
+                          : [S.BASE[i * 3], S.BASE[i * 3 + 1], S.BASE[i * 3 + 2]];
+        const pr = proj(bp), pi = proj0(bp);
+        const g = ew * w * 0.5;
+        const ex = (pr[0] - pi[0]) * g, ey = (pr[1] - pi[1]) * g;
+        if (isFinite(ex) && isFinite(ey)) {
+          dx += ex; dy += ey;
+          S.earOff[i * 2] = ex; S.earOff[i * 2 + 1] = ey;
+        }
+      }
       if (mesh.kind[i] === 1 && hg > 0) {
         const info = mesh.ringOf[i];
         const hw = info ? [0.5, 0.85, 0.4][info.ring] : 0;
@@ -391,12 +434,21 @@
     const R = matFromQuat(st.q);
     const midX = S.mid[0];
     const pad = pass.pad * (o.padScale || 1);
-    let drawn = 0, culled = 0;
+    let drawn = 0, culled = 0, earBand = 0, earFaded = 0;
     for (let t = 0; t < m; t++) {
       const tri = order[t] * 3;
       const a = list[tri], b = list[tri + 1], c = list[tri + 2];
       const nz = R[6] * pass.normals[tri] + R[7] * pass.normals[tri + 1] + R[8] * pass.normals[tri + 2];
       const behind = nz < pass.cull;
+      /* Ear triangles are never mirror-sampled: an ear is chiral, so a
+         mirrored copy of the opposite pinna reads as a wrong-way ear
+         stuck on the silhouette, and ear normals sit near nz == 0 at
+         rest, so the binary mirror flip pops triangle-by-triangle
+         exactly there.  They keep their own texture and, as the far
+         ear turns away, fade into the (unmirrored) edge-extended
+         plate while the ear swing tucks them behind the jaw.       */
+      const earF = pass.earF ? pass.earF[order[t]] : 0;
+      const isEar = earF > 0.30;
       const ax = DST[a * 2], ay = DST[a * 2 + 1];
       const bx = DST[b * 2], by = DST[b * 2 + 1];
       const cx = DST[c * 2], cy = DST[c * 2 + 1];
@@ -408,7 +460,7 @@
       let s0x = S2[a * 2], s0y = S2[a * 2 + 1];
       let s1x = S2[b * 2], s1y = S2[b * 2 + 1];
       let s2x = S2[c * 2], s2y = S2[c * 2 + 1];
-      if (behind && pass.mirror) {
+      if (behind && pass.mirror && !isEar) {
         /* Mirrored source approximation; swap the sample winding so the
            affine remains non-degenerate. This is not learned inpainting. */
         s0x = 2 * midX - s0x;
@@ -443,13 +495,32 @@
       const y1 = clamp(Math.ceil(Math.max(s0y, s1y, s2y)) + 1, 0, H);
       const sw = x1 - x0, sh = y1 - y0;
       if (sw > 0 && sh > 0) {
-        try { ctx.drawImage(behind ? S.cache.plate : S.src, x0, y0, sw, sh, x0, y0, sw, sh); } catch (e) {}
+        try { ctx.drawImage(behind && !isEar ? S.cache.plate : S.src, x0, y0, sw, sh, x0, y0, sw, sh); } catch (e) {}
+        if (isEar && S.cache.plate) {
+          /* far ear melts into the edge-extended plate as its normal
+             turns away — a continuous fade in nz, no binary switch.
+             A folded ear triangle (destination winding flipped vs the
+             source, which the swing gradient is tuned to avoid but a
+             skinny tessellation triangle can still do at the yaw cap)
+             is covered outright: flipped pinna texture is the one
+             thing this band must never show.                        */
+          const folded = (det < 0) !== (area < 0);
+          const fade = folded ? 1 : clamp01((-nz - 0.04) / 0.28) * clamp01(earF * 1.7);
+          if (fade > 0.01) {
+            ctx.globalAlpha = fade;
+            try { ctx.drawImage(S.cache.plate, x0, y0, sw, sh, x0, y0, sw, sh); } catch (e) {}
+            ctx.globalAlpha = 1;
+            earFaded++;
+          }
+        }
       }
       ctx.restore();
       ctx.setTransform(1, 0, 0, 1, 0, 0);
-      drawn++; if (behind) culled++;
+      drawn++; if (behind) culled++; if (isEar) earBand++;
     }
     S.stats.tris += drawn; S.stats.culled = (S.stats.culled || 0) + culled;
+    S.stats.earBand = (S.stats.earBand || 0) + earBand;
+    S.stats.earFaded = (S.stats.earFaded || 0) + earFaded;
     return drawn;
   }
 
@@ -887,7 +958,7 @@
     const C = deform(S, st);
     const D = new Array(478);
     for (let i = 0; i < 478; i++) D[i] = { x: S.DST[i * 2], y: S.DST[i * 2 + 1], z: S.depth[i] };
-    S.stats.tris = 0; S.stats.culled = 0;
+    S.stats.tris = 0; S.stats.culled = 0; S.stats.earBand = 0; S.stats.earFaded = 0;
     /* ---- compose the shell on the layer, then blit once ------------ */
     lc.setTransform(1, 0, 0, 1, 0, 0);
     lc.clearRect(0, 0, S.W, S.H);
@@ -962,7 +1033,9 @@
       ctx.stroke();
       ctx.restore();
     }
-    const dbg = { tris: S.stats.tris, culled: S.stats.culled, mouth: { mw, gap, h, ...oral }, jaw: S.jaw };
+    const dbg = { tris: S.stats.tris, culled: S.stats.culled,
+                  ear: { band: S.stats.earBand || 0, faded: S.stats.earFaded || 0 },
+                  mouth: { mw, gap, h, ...oral }, jaw: S.jaw };
     S.lastDebug = dbg;
     return dbg;
   }

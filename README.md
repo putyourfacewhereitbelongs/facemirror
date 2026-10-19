@@ -12,7 +12,7 @@ approximate those newly visible areas. The supported yaw is deliberately limited
 ```bash
 npm run dev       # build and serve on 0.0.0.0:4173 (camera works on a secure/local origin)
 npm run check     # fail if puppet.html / index.html are stale vs src/
-npm test          # check + 38 math checks + 46 behavioural checks
+npm test          # check + 38 math checks + 56 behavioural checks
 ```
 
 `puppet.html` is the distributable page with the local modules inlined. The page still needs internet
@@ -53,6 +53,14 @@ FaceMirror · Continue ▶** link returns to `index.html#back`.
   than being dropped or stretched to the silhouette. An edge-extended blurred plate covers small
   disocclusions. This reduces obvious collapse, but it does not invent identity-specific details
   that the photograph never captured.
+* **Ears.** MediaPipe has no pinna landmarks, so an ear band is derived geometrically around the
+  tragion landmarks (234/454) and the shell just outside the oval, where frontal-ear pixels live.
+  The band is recessed behind the cheek plane in the depth prior (so the near ear can no longer
+  paint over the cheek on a turn), takes true rotational foreshortening anchored at the cheek
+  (the far ear tucks behind the jaw instead of staying glued to the silhouette), and is never
+  mirror-sampled — a mirrored ear has the wrong chirality, and ear normals sit at the mirror
+  threshold at rest. The far ear instead fades continuously into the edge-extended plate as it
+  turns away, and a folded ear triangle is plate-covered rather than shown flipped.
 * **Temporal continuity.** Per-coordinate one-euro landmark filters, bounded pose slew, trust
   envelopes on tracking loss, smoothed expression actions and mouth/teeth visibility envelopes
   avoid hard state switches. Polygon guards accept both tuple and `{x,y}` point formats and reject
@@ -97,10 +105,11 @@ keeping the current tracking, sculpting, capture and UI around it.
 ## Verification and limits
 
 `npm test` verifies the generated page is current, runs 38 pure-math checks, and exercises the app
-modules against a mock DOM and synthetic 478-point face (48 behavioural assertions). The harness
+modules against a mock DOM and synthetic 478-point face (56 behavioural assertions). The harness
 checks pose recovery, held-pose stability, bounded sweep/dropout, zero NaNs and flash-class clips,
 complete depth-key permutations at startup and a known yaw, forced merge-sort recovery from adversarial
-prior order, full shell coverage via mirrored samples, mouth/cavity/teeth/tongue passes, jawOpen
+prior order, full shell coverage via mirrored samples, ear recess/swing/tuck and far-ear fade through
+both turn directions, mouth/cavity/teeth/tongue passes, jawOpen
 blendshape routing, mirrored webcam snapshots, click hit-testing, PNG capture,
 recording lifecycle/track cleanup and the landmark/minimize controls. It also reports tracked
 clip/fill/image calls per rendered frame; this is a canvas-command proxy, **not an FPS benchmark**.

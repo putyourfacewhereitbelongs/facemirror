@@ -583,9 +583,12 @@
     return bi;
   }
   /* screen px -> canonical px.  Solves the *actual* mapping the renderer
-     uses,  dst = S2 + w·(proj(base + delta) − proj(base)),  with a numerical
-     Jacobian — so the dot lands under the pointer even while the head is
-     turned, the face is scaled and an expression is running.            */
+     uses,  dst = S2 + w·(proj(base + delta) − proj(base)) + earOff,  with a
+     numerical Jacobian — so the dot lands under the pointer even while the
+     head is turned, the face is scaled and an expression is running.
+     earOff is the pose-only ear swing from the last deform (zero except
+     on ear-band points of a turned head); it does not depend on the
+     sculpt delta being solved for, so it enters as a constant offset. */
   function screenToCanonical(i, target) {
     const S = A.ses, head = A.head;
     if (!S || !S.proj || !head) return [0, 0, 0];
@@ -594,9 +597,10 @@
     const p0 = S.proj(base);
     const sx = S.S2[i * 2], sy = S.S2[i * 2 + 1];
     const ex = A.deltaExpr[i * 3], ey = A.deltaExpr[i * 3 + 1];
+    const eoX = S.earOff ? S.earOff[i * 2] : 0, eoY = S.earOff ? S.earOff[i * 2 + 1] : 0;
     const at = (x, y) => {
       const p = S.proj([base[0] + ex + x, base[1] + ey + y, base[2]]);
-      return [sx + (p[0] - p0[0]) * w, sy + (p[1] - p0[1]) * w];
+      return [sx + (p[0] - p0[0]) * w + eoX, sy + (p[1] - p0[1]) * w + eoY];
     };
     let x = A.sculpt[i * 2], y = A.sculpt[i * 2 + 1];
     const h = Math.max(0.25, head.fw * 0.002);
