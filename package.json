@@ -3,10 +3,22 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Realistic webcam-driven 3D face avatar + face editor. Zero-install static site.",
+  "description": "Realistic webcam-driven 3D face avatar + face editor, with the legacy 2.5D photo puppet kept at puppet.html.",
   "scripts": {
-    "test": "node --test src/tests/",
-    "check": "for f in src/*.js; do node --check \"$f\" || exit 1; done",
+    "test": "npm run test:3d && npm run test:puppet",
+    "test:3d": "node --test src/tests/",
+    "test:puppet": "node tools/build.mjs --check && node tools/verify.mjs && node tools/harness.mjs",
+    "check": "for f in src/*.js src/puppet/*.js tools/*.mjs; do node --check \"$f\" || exit 1; done && node tools/build.mjs --check",
+    "check:3d": "for f in src/*.js; do node --check \"$f\" || exit 1; done",
+    "check:puppet": "node tools/build.mjs --check",
+    "build:puppet": "node tools/build.mjs",
+    "verify:puppet": "node tools/verify.mjs",
+    "harness:puppet": "node tools/build.mjs && node tools/harness.mjs",
+    "dev:puppet": "node tools/build.mjs && node tools/serve.mjs",
+    "serve:puppet": "node tools/serve.mjs",
     "serve": "python3 -m http.server 8010"
+  },
+  "dependencies": {
+    "delaunator": "^5.0.1"
   }
 }

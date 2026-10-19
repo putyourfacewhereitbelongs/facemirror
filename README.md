@@ -27,6 +27,26 @@ First load is fully self-contained: three.js, MediaPipe tasks-vision wasm, and
 the 3.7 MB face-landmarker model are vendored under `vendor/` + `assets/`.
 After that it runs offline (settings live in `localStorage`).
 
+## Legacy 2.5D photo puppet
+
+The earlier still-photo puppet remains available at
+[`puppet.html`](puppet.html) alongside FaceMirror-3D. It uses the 478-point
+face mesh to warp a portrait through head pose and expressions, with sculpt
+tools, procedural teeth/tongue, PNG capture and WebM recording. During head
+turns its geometrically derived ear band is recessed behind the cheek plane,
+foreshortens instead of staying glued to the silhouette, and is never
+mirror-sampled; the far ear tucks behind the jaw and fades into an
+edge-extended plate.
+
+```bash
+npm install
+npm run dev:puppet        # rebuild puppet.html and serve on 0.0.0.0:4173
+```
+
+Unlike FaceMirror-3D, the legacy page loads MediaPipe Tasks Vision and its
+models from their CDNs, and its Delaunay build/test tooling uses the
+`delaunator` package in `package.json`.
+
 ## What's inside
 
 | Path | What |
@@ -48,6 +68,8 @@ After that it runs offline (settings live in `localStorage`).
 | `src/perf.js` | adaptive quality governor + `Shift+D` HUD |
 | `src/ui.js` | chips, 52 sliders with 🔒 + gain drags, wizard, PiP preview |
 | `vendor/`, `assets/` | pinned three.js 0.186.1, tasks-vision 1.1.0 + wasm, face_landmarker.task |
+| `puppet.html`, `src/puppet/`, `src/math.js` | legacy 2.5D still-photo puppet and its inlined distributable page |
+| `tools/` | legacy puppet build, verification, mock-DOM harness and dev server |
 
 Every producer (camera, drag, emotion, record-playback, manual sliders, idle)
 writes its own layer; `rig.update` merges them explicitly:
@@ -94,16 +116,22 @@ points); edits pin 🔒 so the camera stops overriding them.
 ## Tests
 
 ```bash
-node --test src/tests/     # pure-math suites + headless FakeDetector smoke
+npm test                    # FaceMirror-3D suites + legacy puppet checks
+npm run test:3d             # pure-math suites + headless FakeDetector smoke
+npm run test:puppet         # generated-page check + math + mock-DOM harness
 ```
 
-80 tests across One-Euro lag/jitter, spring stability, blink-scheduler
-statistics (2-minute sim), saccade main sequence, emotion classification
-(contempt ≠ joy), symmetrize, Jacobian-solver convergence, stabilizeBlink,
-dead-channel anti-gating (head rotation must not fake a jaw shift), calibration
-math, and GLB export parse-back. The smoke harness runs the full solve chain
-with `window.__FACEMIRROR_FAKE = 'happy|blink|turn|nosecret'` — no webcam, no
-DOM.
+The FaceMirror-3D suites include 80 tests across One-Euro lag/jitter, spring
+stability, blink-scheduler statistics (2-minute sim), saccade main sequence,
+emotion classification (contempt ≠ joy), symmetrize, Jacobian-solver
+convergence, stabilizeBlink, dead-channel anti-gating (head rotation must not
+fake a jaw shift), calibration math, and GLB export parse-back. The smoke
+harness runs the full solve chain with
+`window.__FACEMIRROR_FAKE = 'happy|blink|turn|nosecret'` — no webcam, no DOM.
+
+The legacy puppet suite verifies that `puppet.html` is current, runs 38
+pure-math checks and 56 mock-DOM behavioural assertions, including ear
+recess/swing/tuck and far-ear fade through both turn directions.
 
 ## Manual checklist (2 minutes, in the browser)
 
